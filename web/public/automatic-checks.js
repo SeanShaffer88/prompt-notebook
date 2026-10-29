@@ -30,13 +30,14 @@ function scheduleAutomaticChecks(){clearTimeout(automaticTimer);if(automaticBusy
 async function driveAutomaticChecks(){
  if(automaticBusy)return;if(pending||$('#modal').open||document.activeElement?.matches('input,textarea,select,[contenteditable=true]')){automaticTimer=setTimeout(driveAutomaticChecks,3000);return;}
  try{const snapshot=await api('/api/auto/status');if(!snapshot.settings.enabled||snapshot.settings.paused){data.autoSettings=snapshot.settings;renderAutomaticBadge();return;}
-  if(snapshot.recentStarts.length>=snapshot.settings.maxPerHour){automaticNextWake=Math.min(...snapshot.recentStarts.map(s=>Date.parse(s)))+3600000;automaticTimer=setTimeout(driveAutomaticChecks,15000);return;}
   const names=Object.keys(providerKeys).sort().join(',');if(names!==automaticKeyNames){automaticKeyNames=names;if(snapshot.jobs.some(j=>j.status==='blocked'))await api('/api/auto/retry-blocked',{});}
-  if(!snapshot.jobs.some(j=>j.status==='queued'&&Date.parse(j.dueAt)<=Date.now())){automaticTimer=setTimeout(driveAutomaticChecks,15000);return;}
-  automaticBusy=true;pending=true;document.querySelectorAll('button').forEach(b=>b.disabled=!b.hasAttribute('data-auto-pause'));status('Automatic workflow check running. Keys remain in this tab.');renderAutomaticBadge();
-  const result=await api('/api/auto/run-next',{});if(result.nextEligibleAt)automaticNextWake=Date.parse(result.nextEligibleAt);else automaticNextWake=0;
+  const canCheck=snapshot.recentStarts.length<snapshot.settings.maxPerHour&&snapshot.jobs.some(j=>j.status==='queued'&&Date.parse(j.dueAt)<=Date.now()),repairs=snapshot.repairs;
+  const canRepair=repairs?.settings?.enabled&&((repairs.pendingSuggestions>0&&repairs.recentSuggestions.length<repairs.settings.maxSuggestionsPerHour)||(repairs.settings.autoTest&&repairs.pendingTests>0&&repairs.recentTests.length<repairs.settings.maxWorkflowTestsPerHour));
+  if(!canCheck&&!canRepair){automaticTimer=setTimeout(driveAutomaticChecks,15000);return;}
+  automaticBusy=true;pending=true;document.querySelectorAll('button').forEach(b=>b.disabled=!b.hasAttribute('data-auto-pause'));status(canCheck?'Automatic workflow check running. Keys remain in this tab.':'Automatic repair step running. Activation still requires approval.');renderAutomaticBadge();
+  const result=await api(canCheck?'/api/auto/run-next':'/api/repairs/run-next',{});automaticNextWake=0;
   if(automaticPauseRequested){await api('/api/auto/settings',{paused:true});automaticPauseRequested=false;}
-  await refresh();if(result.job?.status==='blocked')status('Automatic check blocked: '+result.job.error,true);else status(result.ran?'Automatic workflow check saved. Review Auto checks for alerts.':'Automatic queue waiting: '+result.reason);
+  await refresh();if(result.job?.status==='blocked'||result.error)status('Automatic step blocked: '+(result.error || result.job.error),true);else status(result.ran?(canCheck?'Automatic workflow check saved. Review Auto checks for alerts.':'Repair step saved. Review Repairs for tests and approval.'):'Automatic queue waiting: '+result.reason);
  }catch(error){if(!error.message.includes('Another operation'))status('Automatic checks: '+error.message,true);}
  finally{if(automaticBusy){automaticBusy=false;pending=false;document.querySelectorAll('button').forEach(b=>b.disabled=b.hasAttribute('data-gate-blocked'));renderAutomaticBadge();}scheduleAutomaticChecks();}
 }

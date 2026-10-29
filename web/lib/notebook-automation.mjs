@@ -13,7 +13,7 @@ export function automationService(state,{enhancements,preflight,defaultModel}){
   const affected=state.workflows.filter(w=>modelsChanged||changedWorkflows.includes(w.id)||w.promptIds.some(pid=>changedPrompts.includes(pid)));
   state.changeEvents.push({id:id(),path,createdAt:now(),promptIds:changedPrompts,workflowIds:affected.map(w=>w.id),kind:modelsChanged?'model-settings':newVersions.length?'prompt-version':changedWorkflows.length?'workflow':'active-version-or-winner'});
   if(state.changeEvents.length>200)state.changeEvents.shift();
-  if(!state.autoSettings.enabled||path==='/api/bundle/import')return;
+  if(!state.autoSettings.enabled||path==='/api/bundle/import'||path.startsWith('/api/repairs/')&&!path.endsWith('/activate')&&!path.endsWith('/rollback'))return;
   for(const w of affected){
    const added=newVersions.slice().reverse().find(v=>w.promptIds.includes(v.promptId)&&state.prompts.find(p=>p.id===v.promptId)?.activeVersionId!==v.id),winner=winnerChanged.slice().reverse().find(e=>w.promptIds.includes(e.promptId));
    let target=added?{promptId:added.promptId,versionId:added.id}:winner?{promptId:winner.promptId,versionId:winner.winnerVersionId}:null;
@@ -42,7 +42,7 @@ export function automationService(state,{enhancements,preflight,defaultModel}){
   }return check;
  }
  async function route(method,path,body){
-  if(method==='GET'&&path==='/api/auto/status')return {settings:state.autoSettings,jobs:state.autoJobs.filter(j=>['queued','blocked'].includes(j.status)).map(j=>({id:j.id,status:j.status,dueAt:j.dueAt})),recentStarts:state.autoJobs.filter(j=>j.startedAt&&Date.now()-Date.parse(j.startedAt)<3600000).map(j=>j.startedAt),revision:[state.changeEvents.at(-1)?.id,state.autoJobs.at(-1)?.updatedAt,state.regressionAlerts.at(-1)?.id].join(':')};
+  if(method==='GET'&&path==='/api/auto/status'){const attempts=(state.repairCases || []).flatMap(r=>r.attempts);return {settings:state.autoSettings,jobs:state.autoJobs.filter(j=>['queued','blocked'].includes(j.status)).map(j=>({id:j.id,status:j.status,dueAt:j.dueAt})),recentStarts:state.autoJobs.filter(j=>j.startedAt&&Date.now()-Date.parse(j.startedAt)<3600000).map(j=>j.startedAt),repairs:{settings:state.repairSettings,pendingSuggestions:(state.repairCases || []).filter(r=>r.status==='queued-suggestion').length,pendingTests:(state.repairCases || []).filter(r=>r.status==='queued-tests').length,recentSuggestions:attempts.filter(a=>a.type==='suggest'&&Date.now()-Date.parse(a.startedAt)<3600000).map(a=>a.startedAt),recentTests:attempts.filter(a=>a.type==='test'&&Date.now()-Date.parse(a.startedAt)<3600000).map(a=>a.startedAt)},revision:[state.changeEvents.at(-1)?.id,state.autoJobs.at(-1)?.updatedAt,state.regressionAlerts.at(-1)?.id].join(':')};}
   if(method==='POST'&&path==='/api/auto/settings'){
    const next={...state.autoSettings,...body};for(const key of ['enabled','paused'])requireValue(typeof next[key]==='boolean','Invalid automatic check setting.');requireValue(Number.isInteger(next.debounceSeconds)&&next.debounceSeconds>=0&&next.debounceSeconds<=300,'Debounce must be 0–300 seconds.');requireValue(Number.isInteger(next.maxPerHour)&&next.maxPerHour>=1&&next.maxPerHour<=20,'Hourly cap must be 1–20 checks.');state.autoSettings={enabled:next.enabled,paused:next.paused,debounceSeconds:next.debounceSeconds,maxPerHour:next.maxPerHour};return state.autoSettings;
   }
