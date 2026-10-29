@@ -12,7 +12,17 @@ export function enhancementState(state,defaultModel){return (state.workflowCheck
 export function enhancementService(state,{execute,preflight,defaultModel}){
  state.workflowChecks ||= [];
  state.datasets ||= [];
+ state.runReviews ||= [];
  async function route(method,path,body){
+  if(method==='POST'&&path==='/api/run-reviews'){
+   const run=state.runs.find(r=>r.id===body.runId&&r.status==='complete');requireValue(run,'Completed response not found.',404);
+   const scores={};for(const key of ['accuracy','clarity','completeness','tone']){const score=body.scores?.[key];requireValue(score===null || Number.isInteger(score)&&score>=1&&score<=5,'Rubric scores must be 1–5 or null.');scores[key]=score;}
+   const notes=body.notes?text(body.notes,'Review notes',3000):'';let review=state.runReviews.find(r=>r.runId===run.id);if(!review){review={id:id(),runId:run.id,promptId:run.promptId};state.runReviews.push(review);}Object.assign(review,{scores,notes,updatedAt:now()});return review;
+  }
+  const blind=path.match(/^\/api\/(comparisons|experiments)\/([^/]+)\/blind$/);
+  if(method==='POST'&&blind){const c=state[blind[1]].find(c=>c.id===blind[2]);requireValue(c,'Comparison not found.',404);requireValue(typeof body.enabled==='boolean','Choose whether identities should be hidden.');
+   if(body.enabled){if(!c.blind){const order=blind[1]==='experiments'?[...c.versionIds]:c.results.map(r=>r.runId);for(let i=order.length-1;i>0;i--){const j=crypto.getRandomValues(new Uint32Array(1))[0]%(i+1);[order[i],order[j]]=[order[j],order[i]];}c.blind={order,createdAt:now()};}c.blind.hidden=true;}else if(c.blind){c.blind.hidden=false;c.blind.revealedAt=now();}return c;
+  }
   if(method==='POST'&&path==='/api/datasets'){
    versionFor(state,body.promptId);requireValue(Array.isArray(body.testIds)&&body.testIds.length>0&&body.testIds.length<=3,'Select 1–3 examples for a reusable dataset.');
    const examples=[...new Set(body.testIds)].map(tid=>{const t=state.tests.find(t=>t.id===tid&&t.promptId===body.promptId);requireValue(t,'Dataset example does not belong to this prompt.');return {...structuredClone(t),id:id()};});

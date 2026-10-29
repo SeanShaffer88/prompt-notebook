@@ -9,6 +9,16 @@ async function reviewed(state){const service=notebookService(state),prompt=state
 
 async function tested(state){const {service,c,prompt}=await reviewed(state);const suggestion=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{});const candidate=await service.route('POST',`/api/improvements/${suggestion.id}/candidate`,{template:suggestion.template});const experiment=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[c.versionId,candidate.id],testIds:[candidate.comparisonSource.testId]});return {service,prompt,candidate,experiment:state.experiments.find(e=>e.id===experiment.id),original:c.versionId};}
 
+test('rubric reviews persist, feed improvement evidence and blind identities must be revealed for activation',async()=>{
+ const state=structuredClone(seed),{service,c,prompt}=await reviewed(state),runId=c.results[0].runId;
+ const scores={accuracy:5,clarity:4,completeness:null,tone:3};await service.route('POST','/api/run-reviews',{runId,scores,notes:'Clear but terse'});await service.route('POST','/api/run-reviews',{runId,scores,notes:'Updated'});assert.equal(state.runReviews.length,1);
+ const suggestion=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{});assert.equal(suggestion.evidence[0].rubric.scores.clarity,4);
+ await service.route('POST',`/api/comparisons/${c.id}/blind`,{enabled:true});const order=[...c.blind.order];await service.route('POST',`/api/comparisons/${c.id}/blind`,{enabled:false});await service.route('POST',`/api/comparisons/${c.id}/blind`,{enabled:true});assert.deepEqual(c.blind.order,order);
+ await assert.rejects(service.route('POST','/api/run-reviews',{runId,scores:{...scores,accuracy:6}}));
+ const candidate=await service.route('POST',`/api/improvements/${suggestion.id}/candidate`,{template:suggestion.template}),e=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[prompt.activeVersionId,candidate.id],testIds:[candidate.comparisonSource.testId]});
+ await service.route('POST',`/api/experiments/${e.id}/winner`,{versionId:candidate.id});await service.route('POST',`/api/experiments/${e.id}/blind`,{enabled:true});await assert.rejects(service.route('POST',`/api/experiments/${e.id}/activate`,{winnerVersionId:candidate.id,expectedActiveVersionId:prompt.activeVersionId}),/Reveal/);
+});
+
 test('datasets snapshot examples and repeated trials preserve every output and rule result',async()=>{
  const state=structuredClone(seed),{service,prompt,candidate,original}=await tested(state);const example=state.tests[0];const dataset=await service.route('POST','/api/datasets',{promptId:prompt.id,title:'Reusable evidence cases',testIds:[example.id]});example.inputs.source_notes='Changed later';assert.notEqual(dataset.examples[0].inputs.source_notes,example.inputs.source_notes);
  const e=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[original,candidate.id],datasetId:dataset.id,repeats:3});assert.equal(e.results.length,6);assert.deepEqual([...new Set(e.results.map(r=>r.trial))],[0,1,2]);assert.equal(e.testSnapshots[0].inputs.source_notes,dataset.examples[0].inputs.source_notes);

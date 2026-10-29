@@ -36,3 +36,6 @@ Test each affected workflow before promotion using the current active version an
 
 ### Slice 2: reusable evaluations
 Save 1–3 checked examples as a named dataset snapshot. Experiments can use that dataset and repeat each example 1–3 times, up to six example/trial pairs. Every trial is retained and shown independently. History offers capture of failed or successful responses as regression examples with optional expected output and rule checks; source run provenance is preserved.
+
+### Slice 3: human review
+Score completed responses on accuracy, clarity, completeness and tone, with optional notes. Reviews persist and are included in subsequent comparison-based prompt suggestions. Blind model and version review stores a randomized order and masks identity labels in the comparison view; outputs may identify themselves, and exports retain provenance. Reveal version identities before activation. Experiments show a baseline-to-candidate instruction diff; unchanged prefix/suffix context is retained around the changed block.
