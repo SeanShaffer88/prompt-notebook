@@ -1,6 +1,7 @@
 import { id, now, requireValue, text, variables, fill, evaluate, cleanChecks, versionFor, createVersion as coreCreateVersion, workflowStatus } from './notebook-core.mjs';
 import { callModel, PROVIDERS, providerInfo, normalizeKeys, validateModelId } from './providers.mjs';
 import {enhancementService,enhancementState} from './notebook-enhancements.mjs';
+import {bundleService} from './notebook-bundles.mjs';
 export function notebookService(state, credentials='') {
   const store={read:()=>structuredClone(state),mutate:fn=>fn(state)};
   state.comparisons ||= [];
@@ -43,7 +44,9 @@ export function notebookService(state, credentials='') {
   }
 
   const enhancements=enhancementService(state,{execute,preflight,defaultModel});
+  const bundles=bundleService(state);
   async function route(method,path,body) {
+    const bundle=await bundles(method,path,body);if(bundle!==undefined)return bundle;
     const enhanced=await enhancements.route(method,path,body);if(enhanced!==undefined)return enhanced;
     if(method==='GET' && path==='/api/state') return getState();
     if(method==='GET' && path==='/api/export') return store.read();

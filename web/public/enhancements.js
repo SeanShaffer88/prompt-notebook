@@ -4,6 +4,7 @@ function workflowCheckHtml(check){return `<details class="box" open><summary>${e
 function renderEnhancements(){
  renderDatasetTools();
  renderReviewTools();
+ renderBundleTools();
  if(tab==='experiments'){
   document.querySelectorAll('.experiment-decision').forEach((panel,index)=>{
    const e=data.experiments.find(e=>e.id===panel.dataset.experimentId);if(!e||e.blind?.hidden)return;
@@ -19,6 +20,13 @@ function renderEnhancements(){
   bind('save-workflow-quality',()=>{let body;try{body=JSON.parse($('#workflow-quality').value);}catch{status('Enter valid JSON.',true);return;}action(async()=>{await api(`/api/workflows/${w.id}/quality`,body);$('#modal').close();},'Contracts and budgets saved. Retest workflows after changing them.');});
  });
  document.querySelectorAll('[data-check-experiment]').forEach(b=>b.onclick=()=>{const body={workflowId:b.dataset.checkWorkflow,baselineVersionId:p().activeVersionId,input:$('#wf-check-input-'+b.dataset.checkExperiment+'-'+b.dataset.checkWorkflow).value};action(()=>api(`/api/experiments/${b.dataset.checkExperiment}/workflow-check`,body),'Workflow comparison saved. Review regressions, unscored changes and stale checks before activation.');});
+}
+function renderBundleTools(){if(tab!=='history')return;
+ $('#content').insertAdjacentHTML('beforeend',`<section class="box"><h2>Portable notebook bundles</h2><p>Export prompts, versions, tests, datasets, responses, reviews, experiments and connected workflows together. Provider keys and connection settings are excluded. Imports add independent copies with new IDs; existing work is retained. Imported workflow checks require retesting.</p><button id="export-bundle">Download notebook bundle</button><label for="import-bundle">Choose bundle to preview · public import limit 110 KB</label><input id="import-bundle" type="file" accept="application/json,.json"></section>`);
+ bind('export-bundle',()=>action(async()=>{const bundle=await api('/api/bundle/export',{});const blob=new Blob([JSON.stringify(bundle)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='prompt-notebook-bundle.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);},'Notebook bundle exported. Keep responses and inputs private when sharing.'));
+ $('#import-bundle').onchange=async event=>{const file=event.target.files[0];if(!file)return;let bundle;try{if(file.size>110000)throw Error('Public imports support files up to 110 KB.');bundle=JSON.parse(await file.text());}catch(error){status(error.message,true);return;}
+  action(async()=>{const preview=await api('/api/bundle/preview',{bundle});modal(`<h2>Preview notebook import</h2><p>${esc(preview.mode)}</p><ul>${Object.entries(preview.counts).filter(([,n])=>n).map(([k,n])=>`<li>${n} ${esc(k)}</li>`).join('')}</ul><p>Workflow checks will be marked stale. This import does not connect provider keys or execute prompts.</p><button id="confirm-bundle-import" class="primary">Import independent copies</button>`);bind('confirm-bundle-import',()=>action(async()=>{const result=await api('/api/bundle/import',{bundle});promptId=result.promptIds[0] || promptId;versionId=null;$('#modal').close();},'Notebook bundle imported as independent copies. Existing work was retained.'));},'Bundle validated. Review the import preview.');
+ };
 }
 function renderDatasetTools(){
  if(tab==='experiments'){
@@ -40,7 +48,7 @@ function renderReviewTools(){
  document.querySelectorAll('[data-review-run]').forEach(b=>b.onclick=()=>{const review=(data.runReviews || []).find(r=>r.runId===b.dataset.reviewRun);modal(`<h2>Response scoring rubric</h2><p>Human scores: 1 poor, 5 excellent. Leave unscored criteria blank.</p>${['accuracy','clarity','completeness','tone'].map(key=>`<label for="rubric-${key}">${key}</label><select id="rubric-${key}"><option value="">Unrated</option>${[1,2,3,4,5].map(n=>`<option ${review?.scores[key]===n?'selected':''}>${n}</option>`).join('')}</select>`).join('')}<label for="rubric-notes">Review notes</label><textarea id="rubric-notes" maxlength="3000">${esc(review?.notes)}</textarea><button id="save-rubric" class="primary">Save rubric scores</button>`);bind('save-rubric',()=>{const body={runId:b.dataset.reviewRun,scores:Object.fromEntries(['accuracy','clarity','completeness','tone'].map(k=>[k,$('#rubric-'+k).value?Number($('#rubric-'+k).value):null])),notes:$('#rubric-notes').value};action(async()=>{await api('/api/run-reviews',body);$('#modal').close();},'Rubric scores saved.');});});
  if(tab==='compare')for(const c of (data.comparisons || []).filter(c=>c.promptId===promptId)){
   const container=document.getElementById('comparison-'+c.id);if(!container)continue;const grid=container.querySelector('.comparison-grid');grid.insertAdjacentHTML('beforebegin',`<div class="actions"><button data-blind-comparison="${c.id}">${c.blind?.hidden?'Reveal model identities':'Hide identities for blind review'}</button><small class="quiet">Blind review masks labels here. Response text may identify its model; saved exports and other views retain provenance.</small></div>`);
-  if(c.blind?.hidden){const cards=[...grid.querySelectorAll('[data-response-run]')];c.blind.order.forEach((runId,index)=>{const card=cards.find(el=>el.dataset.responseRun===runId);if(!card)return;card.querySelector('h3').textContent='Response '+String.fromCharCode(65+index);card.querySelector('.quiet').textContent='Model identity hidden';card.querySelector('.run-meta')?.remove();grid.append(card);});const tag=container.querySelector('.actions .tag');if(tag)tag.textContent='Winner selected';}
+  if(c.blind){const cards=[...grid.querySelectorAll('[data-response-run]')];c.blind.order.forEach((runId,index)=>{const card=cards.find(el=>el.dataset.responseRun===runId);if(!card)return;const title=card.querySelector('h3');title.textContent='Response '+String.fromCharCode(65+index)+(c.blind.hidden?'':' · '+title.textContent);if(c.blind.hidden){card.querySelector('.quiet').textContent='Model identity hidden';card.querySelector('.run-meta')?.remove();}grid.append(card);});const tag=container.querySelector('.actions .tag');if(c.blind.hidden&&tag)tag.textContent='Winner selected';}
  }
  document.querySelectorAll('[data-blind-comparison]').forEach(b=>b.onclick=()=>{const c=data.comparisons.find(c=>c.id===b.dataset.blindComparison);action(()=>api(`/api/comparisons/${c.id}/blind`,{enabled:!c.blind?.hidden}),c.blind?.hidden?'Model identities revealed.':'Model identities hidden with a saved randomized order.');});
  if(tab==='experiments'){
@@ -53,5 +61,6 @@ function renderReviewTools(){
   const update=()=>{const a=data.versions.find(v=>v.id===baseline.value),b=data.versions.find(v=>v.id===candidate.value);$('#prompt-diff').textContent=promptDiff(a.template,b.template);};baseline.addEventListener('change',update);candidate.addEventListener('change',update);update();
  }
 }
+
 
 

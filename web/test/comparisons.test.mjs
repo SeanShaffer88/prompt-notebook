@@ -9,6 +9,14 @@ async function reviewed(state){const service=notebookService(state),prompt=state
 
 async function tested(state){const {service,c,prompt}=await reviewed(state);const suggestion=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{});const candidate=await service.route('POST',`/api/improvements/${suggestion.id}/candidate`,{template:suggestion.template});const experiment=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[c.versionId,candidate.id],testIds:[candidate.comparisonSource.testId]});return {service,prompt,candidate,experiment:state.experiments.find(e=>e.id===experiment.id),original:c.versionId};}
 
+test('portable bundles preserve evaluation graphs with new IDs and reject invalid imports atomically',async()=>{
+ const state=structuredClone(seed),{service,experiment,candidate,prompt,original}=await tested(state);await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});await service.route('POST',`/api/experiments/${experiment.id}/workflow-check`,{workflowId:state.workflows[0].id,baselineVersionId:original,input:'notes'});
+ const bundle=await service.route('POST','/api/bundle/export',{});assert.ok(!bundle.data.settings);const preview=await service.route('POST','/api/bundle/preview',{bundle});assert.equal(preview.counts.prompts,3);assert.equal(state.prompts.length,3);
+ const imported=await service.route('POST','/api/bundle/import',{bundle});assert.equal(state.prompts.length,6);assert.ok(!imported.promptIds.includes(prompt.id));const newPrompt=state.prompts.find(p=>p.id===imported.promptIds[0]);assert.equal(state.versions.find(v=>v.id===newPrompt.activeVersionId).promptId,newPrompt.id);assert.equal(prompt.activeVersionId,original);
+ const reopened=await notebookService(state).route('GET','/api/state');assert.equal(reopened.workflowChecks[1].stale,true);
+ const before=JSON.stringify(state);for(const mutate of [b=>b.data.versions[0].promptId='missing',b=>b.data.prompts.push(b.data.prompts[0]),b=>b.data.experiments[0].repeats=1000000,b=>b.data.prompts[0].credentials='secret',b=>b.schemaVersion=99]){const bad=structuredClone(bundle);mutate(bad);await assert.rejects(service.route('POST','/api/bundle/import',{bundle:bad}));assert.equal(JSON.stringify(state),before);}
+});
+
 test('rubric reviews persist, feed improvement evidence and blind identities must be revealed for activation',async()=>{
  const state=structuredClone(seed),{service,c,prompt}=await reviewed(state),runId=c.results[0].runId;
  const scores={accuracy:5,clarity:4,completeness:null,tone:3};await service.route('POST','/api/run-reviews',{runId,scores,notes:'Clear but terse'});await service.route('POST','/api/run-reviews',{runId,scores,notes:'Updated'});assert.equal(state.runReviews.length,1);

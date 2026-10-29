@@ -39,3 +39,6 @@ Save 1–3 checked examples as a named dataset snapshot. Experiments can use tha
 
 ### Slice 3: human review
 Score completed responses on accuracy, clarity, completeness and tone, with optional notes. Reviews persist and are included in subsequent comparison-based prompt suggestions. Blind model and version review stores a randomized order and masks identity labels in the comparison view; outputs may identify themselves, and exports retain provenance. Reveal version identities before activation. Experiments show a baseline-to-candidate instruction diff; unchanged prefix/suffix context is retained around the changed block.
+
+### Slice 4: portable bundles
+History & export can download a versioned bundle and preview an import. Bundles include prompts, versions, workflows, run history, datasets, reviews and evaluation results; connection settings and keys are excluded. Imports validate schema, sizes and graph references, assign new IDs, retain existing work, and mark imported workflow checks stale. Public imports are limited to 110 KB. Importing does not execute AI calls or connect keys.
