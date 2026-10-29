@@ -1,3 +1,4 @@
+import {cleanSchema,schemaResults} from './output-schema.mjs';
 export const id = () => crypto.randomUUID();
 export const now = () => new Date().toISOString();
 export function requireValue(condition, message, status = 400) {
@@ -21,6 +22,7 @@ export function evaluate(output, checks = {}) {
   if (checks.excludes?.trim()) for (const term of checks.excludes.split('\n').map(s => s.trim()).filter(Boolean)) results.push({ name: `Excludes: ${term}`, pass: !output.toLowerCase().includes(term.toLowerCase()) });
   if (checks.maxWords) results.push({ name: `At most ${checks.maxWords} words`, pass: output.trim().split(/\s+/).length <= checks.maxWords });
   if (checks.json) { let pass = true; try { JSON.parse(output); } catch { pass = false; } results.push({ name: 'Valid JSON', pass }); }
+  if(checks.jsonSchema)results.push(...schemaResults(output,checks.jsonSchema));
   return { results, pass: results.length ? results.every(r => r.pass) : null };
 }
 export function cleanChecks(value = {}) {
@@ -29,7 +31,7 @@ export function cleanChecks(value = {}) {
   requireValue(maxWords === null || (Number.isInteger(maxWords) && maxWords > 0 && maxWords <= 100000), 'Word limit must be a positive integer.');
   requireValue(!value.contains || typeof value.contains === 'string', 'Contains checks must be text.');
   requireValue(!value.excludes || typeof value.excludes === 'string', 'Excludes checks must be text.');
-  return { contains: (value.contains || '').slice(0,5000), excludes: (value.excludes || '').slice(0,5000), maxWords, json: Boolean(value.json) };
+  return { contains: (value.contains || '').slice(0,5000), excludes: (value.excludes || '').slice(0,5000), maxWords, json: Boolean(value.json),...(value.jsonSchema?{jsonSchema:cleanSchema(value.jsonSchema)}:{}) };
 }
 export function versionFor(state, promptId, versionId) {
   const p = state.prompts.find(p => p.id === promptId);
