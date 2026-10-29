@@ -7,7 +7,7 @@ export function workflowPlan(state,experiment,workflow,defaultModel){
  return {workflow:structuredClone(workflow),versions,winner:{...winner,provider:winner.provider || 'anthropic',model:winner.model || defaultModel(winner.provider || 'anthropic')}};
 }
 export function enhancementState(state,defaultModel){return (state.workflowChecks || []).map(check=>{
- try{const e=state.experiments.find(e=>e.id===check.experimentId),w=state.workflows.find(w=>w.id===check.workflowId);const expired=w.quality?.maxAgeHours!=null&&Date.now()-Date.parse(check.finishedAt || check.createdAt)>w.quality.maxAgeHours*3600000;return {...check,expired:Boolean(expired),stale:Boolean(expired)||JSON.stringify(workflowPlan(state,e,w,defaultModel))!==check.signature};}catch{return {...check,stale:true};}
+ try{const e=check.autoTarget?{promptId:check.promptId,winnerVersionId:check.winnerVersionId}:state.experiments.find(e=>e.id===check.experimentId),w=state.workflows.find(w=>w.id===check.workflowId);const expired=w.quality?.maxAgeHours!=null&&Date.now()-Date.parse(check.finishedAt || check.createdAt)>w.quality.maxAgeHours*3600000;return {...check,expired:Boolean(expired),stale:Boolean(expired)||JSON.stringify(workflowPlan(state,e,w,defaultModel))!==check.signature};}catch{return {...check,stale:true};}
 });}
 export function activationGate(state,promptId,versionId,defaultModel){
  const prompt=state.prompts.find(p=>p.id===promptId);if(prompt?.activeVersionId===versionId)return {blocked:false,checks:[]};
@@ -29,6 +29,33 @@ export function enhancementService(state,{execute,preflight,defaultModel}){
  state.datasets ||= [];
  state.runReviews ||= [];
  state.workflowBatches ||= [];
+ async function compareWorkflow(check,baselineVersions,candidateVersions){const plan=check.plan,input=check.input;
+   await Promise.allSettled(Object.entries(check.branches).map(async([name,branch])=>{
+    const versions=name==='baseline'?baselineVersions:candidateVersions;let value=input;
+    try{for(let index=0;index<versions.length;index++){
+     const v=versions[index],contract=plan.workflow.quality?.contracts[index] || {},inputs={[variables(v.template)[0]]:value};
+     try{const run=await execute(v.promptId,v.id,inputs,{workflowCheckId:check.id,workflowBranch:name,workflowStep:index},v);
+      const rule=evaluate(run.output,contract.checks);let fieldsPass=null;
+      if(contract.requiredFields?.length){try{const obj=JSON.parse(run.output);fieldsPass=Boolean(obj&&typeof obj==='object'&&!Array.isArray(obj)&&contract.requiredFields.every(k=>Object.hasOwn(obj,k)));}catch{fieldsPass=false;}}
+      branch.steps.push({index,promptId:v.promptId,versionId:v.id,runId:run.id,rule,fieldsPass});value=run.output;
+     }catch(error){branch.steps.push({index,promptId:v.promptId,versionId:v.id,error:error.message});throw error;}
+    }branch.status='complete';}catch(error){branch.status='failed';branch.error=error.message;}
+    const runs=branch.steps.map(s=>state.runs.find(r=>r.id===s.runId)).filter(Boolean);branch.latencyMs=runs.reduce((n,r)=>n+(r.latencyMs || 0),0);branch.simulated=runs.some(r=>r.simulated);
+    branch.costUsd=branch.status==='complete'&&branch.steps.every(s=>{const c=plan.workflow.quality?.contracts[s.index];return c?.inputPerMillion!=null&&c?.outputPerMillion!=null;})?runs.reduce((n,r,i)=>{const c=plan.workflow.quality.contracts[i];return n+((r.usage?.input_tokens || 0)*c.inputPerMillion+(r.usage?.output_tokens || 0)*c.outputPerMillion)/1e6;},0):null;
+   }));
+   const a=check.branches.baseline,b=check.branches.candidate,flag=(kind,message,index)=>check.flags.push({kind,message,...(index===undefined?{}:{index})});
+   if(a.status==='failed')flag('inconclusive','Current workflow failed; improvement cannot be established.');
+   if(b.status==='failed')flag(a.status==='complete'?'regression':'inconclusive','Candidate workflow failed: '+b.error);
+   for(const step of b.steps){const before=a.steps.find(s=>s.index===step.index);if(!before?.runId||!step.runId)continue;
+    if(before.rule.pass===true&&step.rule.pass===false)flag('regression','Previously passing rule checks now fail.',step.index);
+    if(before.fieldsPass===true&&step.fieldsPass===false)flag('regression','Required JSON fields were lost.',step.index);
+    if(step.rule.pass===false||step.fieldsPass===false)flag('failure','Candidate violates a configured step contract.',step.index);
+    const old=state.runs.find(r=>r.id===before.runId),next=state.runs.find(r=>r.id===step.runId);if(old.output!==next.output)flag('review','Output changed; review for quality or downstream impact.',step.index);
+   }
+   for(const [metric,limit,label] of [['latencyMs',plan.workflow.quality?.maxLatencyMs,'Latency'],['costUsd',plan.workflow.quality?.maxCostUsd,'Estimated cost']])if(limit!=null){if(b[metric]==null)flag('inconclusive',label+' cannot be checked: provide prices for every step.');else if(b[metric]>limit)flag(a[metric]!=null&&a[metric]<=limit?'regression':'failure',label+' exceeds the configured budget.');}
+   if(a.simulated||b.simulated)flag('sample','Simulated outputs and zero usage do not establish quality, cost or speed.');
+   check.status=check.flags.some(f=>f.kind==='regression')?'regression':check.flags.some(f=>['failure','inconclusive'].includes(f.kind))?'needs-review':a.simulated||b.simulated?'sample':check.flags.some(f=>f.kind==='review')?'needs-review':'no-automatic-regressions';check.finishedAt=now();return check;
+ }
  async function route(method,path,body){
   const freshness=path.match(/^\/api\/workflows\/([^/]+)\/check-age$/);
   if(method==='POST'&&freshness){const w=state.workflows.find(w=>w.id===freshness[1]);requireValue(w,'Workflow not found.',404);const maxAgeHours=numeric(body.maxAgeHours,'maximum check age',720);requireValue(maxAgeHours===null||maxAgeHours>0,'Check age must be positive.');w.quality ||= {contracts:w.promptIds.map(()=>({checks:cleanChecks(),requiredFields:[],inputPerMillion:null,outputPerMillion:null})),maxCostUsd:null,maxLatencyMs:null};w.quality.maxAgeHours=maxAgeHours;return w;}
@@ -89,32 +116,8 @@ export function enhancementService(state,{execute,preflight,defaultModel}){
    const estimate=JSON.stringify(state).length+JSON.stringify(plan).length+[...plan.versions,...candidateVersions].reduce((n,v)=>n+v.maxTokens*48+input.length+6000,0);
    requireValue(estimate<=700000,'This workflow check may exceed workspace storage. Use shorter outputs or export to the local app.',413);
    const check={id:id(),experimentId:e.id,promptId:e.promptId,workflowId:w.id,winnerVersionId:e.winnerVersionId,baselineVersionId:active.id,input,plan,signature:JSON.stringify(plan),createdAt:now(),status:'running',branches:{baseline:{steps:[],status:'running'},candidate:{steps:[],status:'running'}},flags:[]};state.workflowChecks.push(check);
-   await Promise.allSettled(Object.entries(check.branches).map(async([name,branch])=>{
-    const versions=name==='baseline'?plan.versions:candidateVersions;let value=input;
-    try{for(let index=0;index<versions.length;index++){
-     const v=versions[index],contract=plan.workflow.quality?.contracts[index] || {},inputs={[variables(v.template)[0]]:value};
-     try{const run=await execute(v.promptId,v.id,inputs,{workflowCheckId:check.id,workflowBranch:name,workflowStep:index},v);
-      const rule=evaluate(run.output,contract.checks);let fieldsPass=null;
-      if(contract.requiredFields?.length){try{const obj=JSON.parse(run.output);fieldsPass=Boolean(obj&&typeof obj==='object'&&!Array.isArray(obj)&&contract.requiredFields.every(k=>Object.hasOwn(obj,k)));}catch{fieldsPass=false;}}
-      branch.steps.push({index,promptId:v.promptId,versionId:v.id,runId:run.id,rule,fieldsPass});value=run.output;
-     }catch(error){branch.steps.push({index,promptId:v.promptId,versionId:v.id,error:error.message});throw error;}
-    }branch.status='complete';}catch(error){branch.status='failed';branch.error=error.message;}
-    const runs=branch.steps.map(s=>state.runs.find(r=>r.id===s.runId)).filter(Boolean);branch.latencyMs=runs.reduce((n,r)=>n+(r.latencyMs || 0),0);branch.simulated=runs.some(r=>r.simulated);
-    branch.costUsd=branch.status==='complete'&&branch.steps.every(s=>{const c=plan.workflow.quality?.contracts[s.index];return c?.inputPerMillion!=null&&c?.outputPerMillion!=null;})?runs.reduce((n,r,i)=>{const c=plan.workflow.quality.contracts[i];return n+((r.usage?.input_tokens || 0)*c.inputPerMillion+(r.usage?.output_tokens || 0)*c.outputPerMillion)/1e6;},0):null;
-   }));
-   const a=check.branches.baseline,b=check.branches.candidate,flag=(kind,message,index)=>check.flags.push({kind,message,...(index===undefined?{}:{index})});
-   if(a.status==='failed')flag('inconclusive','Current workflow failed; improvement cannot be established.');
-   if(b.status==='failed')flag(a.status==='complete'?'regression':'inconclusive','Candidate workflow failed: '+b.error);
-   for(const step of b.steps){const before=a.steps.find(s=>s.index===step.index);if(!before?.runId||!step.runId)continue;
-    if(before.rule.pass===true&&step.rule.pass===false)flag('regression','Previously passing rule checks now fail.',step.index);
-    if(before.fieldsPass===true&&step.fieldsPass===false)flag('regression','Required JSON fields were lost.',step.index);
-    if(step.rule.pass===false||step.fieldsPass===false)flag('failure','Candidate violates a configured step contract.',step.index);
-    const old=state.runs.find(r=>r.id===before.runId),next=state.runs.find(r=>r.id===step.runId);if(old.output!==next.output)flag('review','Output changed; review for quality or downstream impact.',step.index);
-   }
-   for(const [metric,limit,label] of [['latencyMs',plan.workflow.quality?.maxLatencyMs,'Latency'],['costUsd',plan.workflow.quality?.maxCostUsd,'Estimated cost']])if(limit!=null){if(b[metric]==null)flag('inconclusive',label+' cannot be checked: provide prices for every step.');else if(b[metric]>limit)flag(a[metric]!=null&&a[metric]<=limit?'regression':'failure',label+' exceeds the configured budget.');}
-   if(a.simulated||b.simulated)flag('sample','Simulated outputs and zero usage do not establish quality, cost or speed.');
-   check.status=check.flags.some(f=>f.kind==='regression')?'regression':check.flags.some(f=>['failure','inconclusive'].includes(f.kind))?'needs-review':a.simulated||b.simulated?'sample':check.flags.some(f=>f.kind==='review')?'needs-review':'no-automatic-regressions';check.finishedAt=now();return check;
+   return compareWorkflow(check,plan.versions,candidateVersions);
   }
  }
- return {route};
+ return {route,compareWorkflow};
 }

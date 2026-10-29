@@ -32,7 +32,7 @@ async function handle(request:Request){
     cookie=`${cookieName}=${freshToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=15552000${url.protocol==='https:'?'; Secure':''}`;
     state=JSON.parse(row.body);
     if(request.method==='GET'){
-      if(!['/api/state','/api/export'].includes(url.pathname))throw fail('Route not found.',404);
+      if(!['/api/state','/api/export','/api/auto/status'].includes(url.pathname))throw fail('Route not found.',404);
       const result=await notebookService(state).route('GET',url.pathname,{});
       const response=json(result,200,cookie);if(url.pathname==='/api/export')response.headers.set('Content-Disposition','attachment; filename="prompt-notebook-backup.json"');return response;
     }
@@ -70,3 +70,4 @@ async function handle(request:Request){
 }
 export const GET=handle;
 export const POST=handle;
+

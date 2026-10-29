@@ -14,3 +14,7 @@
 .experiment-decision{margin-top:24px;padding-top:18px;border-top:1px solid #42494c}
 
 .table-scroll{overflow-x:auto}.workflow-batch-panel table{width:100%;text-align:left;border-collapse:collapse}.workflow-batch-panel th,.workflow-batch-panel td{padding:10px;border-bottom:1px solid #42494c}.workflow-batch-panel{margin:18px 0}
+
+#automatic-alert-banner{padding:12px 24px;background:#4f3028;color:#ffe6da}#automatic-alert-banner[hidden]{display:none}header{flex-wrap:wrap}
+
+[hidden]{display:none!important}

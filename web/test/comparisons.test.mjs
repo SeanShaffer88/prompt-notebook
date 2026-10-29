@@ -9,6 +9,40 @@ async function reviewed(state){const service=notebookService(state),prompt=state
 
 async function tested(state){const {service,c,prompt}=await reviewed(state);const suggestion=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{});const candidate=await service.route('POST',`/api/improvements/${suggestion.id}/candidate`,{template:suggestion.template});const experiment=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[c.versionId,candidate.id],testIds:[candidate.comparisonSource.testId]});return {service,prompt,candidate,experiment:state.experiments.find(e=>e.id===experiment.id),original:c.versionId};}
 
+test('browser API sends tab keys for batch and automatic execution but not metadata or export routes',async()=>{
+ const {readFile}=await import('node:fs/promises'),{runInNewContext}=await import('node:vm'),source=await readFile(new URL('../public/app.js',import.meta.url),'utf8'),requests=[];
+ const api=runInNewContext(source.slice(source.indexOf('function needsProviderKeys'),source.indexOf('async function refresh'))+'\napi',{providerKeys:{openai:'test-header-key'},fetch:async(path,init)=>{requests.push({path,init});return {ok:true,json:async()=>({ok:true})};}});
+ for(const path of ['/api/experiments/e/workflow-batch','/api/workflow-batches/b/next','/api/auto/run-next','/api/auto/workflows/w/compare-good']){await api(path,{});assert.ok(requests.at(-1).init.headers['x-provider-keys']);}
+ for(const path of ['/api/bundle/export','/api/auto/settings','/api/auto/alerts/a/read']){await api(path,{});assert.equal(requests.at(-1).init.headers['x-provider-keys'],undefined);}
+});
+
+test('automatic changes coalesce, debounce, respect pause/caps and do not queue checks when disabled',async()=>{
+ const state=structuredClone(seed),service=notebookService(state),w=state.workflows[0],prompt=state.prompts[0];
+ await service.route('POST',`/api/workflows/${w.id}/test-input`,{input:'notes'});assert.equal(state.autoJobs.length,0);assert.equal(state.changeEvents.length,1);
+ await service.route('POST','/api/auto/settings',{enabled:true,debounceSeconds:30,maxPerHour:1});
+ const first=await service.route('POST',`/api/prompts/${prompt.id}/versions`,{template:'First {{source_notes}}'});const second=await service.route('POST',`/api/prompts/${prompt.id}/versions`,{template:'Second {{source_notes}}'});assert.equal(state.autoJobs.length,1);assert.equal(state.autoJobs[0].changeCount,2);assert.equal(state.autoJobs[0].target.versionId,second.id);
+ assert.equal((await service.route('POST','/api/auto/run-next',{})).reason,'not-due');state.autoJobs[0].dueAt=new Date(0).toISOString();await service.route('POST','/api/auto/settings',{paused:true});assert.equal((await service.route('POST','/api/auto/run-next',{})).reason,'paused');await service.route('POST','/api/auto/settings',{paused:false});const result=await service.route('POST','/api/auto/run-next',{});assert.equal(result.ran,true);assert.equal(result.job.status,'complete');assert.equal(state.workflowChecks[0].autoTarget,true);assert.equal(prompt.activeVersionId,seed.prompts[0].activeVersionId);
+ await service.route('POST',`/api/prompts/${prompt.id}/versions`,{template:'Third {{source_notes}}'});assert.equal((await service.route('POST','/api/auto/run-next',{})).reason,'hourly-cap');assert.equal(state.autoJobs[1].status,'queued');assert.notEqual(first.id,second.id);
+});
+
+test('last passing snapshots detect live regressions and alerts can be muted, read and acknowledged without clearing failures',async()=>{
+ const state=structuredClone(seed),service=notebookService(state),w=state.workflows[0],prompt=state.prompts[0];for(const v of state.versions){v.provider='openai';v.model='gpt-4.1-mini';}
+ await service.route('POST',`/api/workflows/${w.id}/test-input`,{input:'notes'});await service.route('POST',`/api/workflows/${w.id}/quality`,{contracts:w.promptIds.map(()=>({checks:{contains:'GOOD'},requiredFields:[]}))});
+ const previous=globalThis.fetch;globalThis.fetch=async(url,init)=>output(JSON.parse(init.body).input.includes('BROKEN')||JSON.parse(init.body).input.includes('BAD')?'BAD':'GOOD');
+ try{const live=notebookService(state,{openai:'test-key'}),initial=await live.route('POST',`/api/auto/workflows/${w.id}/compare-good`,{});assert.ok(initial.flags.some(f=>f.kind==='no-baseline'));await live.route('POST',`/api/auto/monitor/${initial.id}/accept-baseline`,{reason:'Reviewed the output and both contracts passed.'});assert.equal(state.workflowBaselines[0].monitorCheckId,initial.id);
+ await live.route('POST','/api/auto/settings',{enabled:true,debounceSeconds:0});const version=await live.route('POST',`/api/prompts/${prompt.id}/versions`,{template:'BROKEN {{source_notes}}',provider:'openai',model:'gpt-4.1-mini'});const result=await live.route('POST','/api/auto/run-next',{});assert.equal(result.job.result,'regression');const alert=state.regressionAlerts[0];assert.equal(alert.kind,'regression');assert.ok(!alert.readAt);
+ await live.route('POST',`/api/auto/workflows/${w.id}/mute`,{hours:1});assert.ok(state.workflowMutes[0].until);await live.route('POST',`/api/auto/alerts/${alert.id}/read`,{});await live.route('POST',`/api/auto/alerts/${alert.id}/acknowledge`,{notes:'Will revise the candidate.'});assert.ok(alert.acknowledgedAt);assert.equal((await live.route('GET','/api/state')).activationGates[version.id].checks[0].problem,'regression');assert.equal(state.workflowBaselines[0].monitorCheckId,initial.id);
+ await live.route('POST',`/api/prompts/${prompt.id}/activate`,{versionId:version.id,override:true,overrideReason:'Exercise active workflow monitoring against the accepted baseline.'});const activeMonitor=await live.route('POST','/api/auto/run-next',{});assert.equal(activeMonitor.job.monitor,true);assert.equal(activeMonitor.job.result,'regression');assert.equal(state.monitorChecks[1].baselineCheckId,initial.id);assert.equal(state.workflowBaselines[0].monitorCheckId,initial.id);
+ const exported=await live.route('POST','/api/bundle/export',{});const copy=structuredClone(seed);await notebookService(copy).route('POST','/api/bundle/import',{bundle:exported});assert.equal(copy.autoSettings.enabled,false);assert.equal(copy.regressionAlerts.length,2);assert.equal(copy.monitorChecks.length,2);
+ }finally{globalThis.fetch=previous;}
+});
+
+test('automatic preflight blocks missing keys and sample monitor results cannot become passing baselines',async()=>{
+ const state=structuredClone(seed),service=notebookService(state),w=state.workflows[0];await service.route('POST','/api/auto/settings',{enabled:true,debounceSeconds:0});await service.route('POST',`/api/workflows/${w.id}/test-input`,{input:'notes'});
+ const blocked=await notebookService(state,{openai:'test'}).route('POST','/api/auto/run-next',{});assert.equal(blocked.job.status,'blocked');assert.equal(blocked.job.startedAt,undefined);assert.equal(state.runs.length,0);
+ await service.route('POST','/api/auto/retry-blocked',{});const sample=await service.route('POST','/api/auto/run-next',{});assert.equal(sample.ran,true);assert.equal(state.monitorChecks.length,1);await assert.rejects(service.route('POST',`/api/auto/monitor/${sample.job.checkId}/accept-baseline`,{reason:'Not a real baseline'}),/simulated/);assert.equal(state.workflowBaselines.length,0);
+});
+
 test('workflow batch queues all missing checks, preserves progress, cancels and reuses fresh checks',async()=>{
  const state=structuredClone(seed),{service,prompt,candidate,experiment,original}=await tested(state);await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});const a=state.workflows[0],b=await service.route('POST','/api/workflows',{title:'Research to editor',promptIds:[prompt.id,state.prompts[2].id]});
  for(const w of [a,b])await service.route('POST',`/api/workflows/${w.id}/test-input`,{input:'Reusable notes'});
