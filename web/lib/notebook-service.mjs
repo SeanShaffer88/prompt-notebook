@@ -27,7 +27,7 @@ export function notebookService(state, credentials='') {
       return {output,model:'Sample mode — simulated',simulated:true,usage:{input_tokens:0,output_tokens:0},latencyMs:0};
     }
     // Fixed destination: no custom endpoints, no server-funded keys, no access to local services.
-    return callModel(prompt,options,{provider:resolved.id,key:keys[resolved.id],model:defaultModel(resolved.id)},(url,init)=>fetch(url,{...init,signal:AbortSignal.timeout(Math.max(1000,Math.min(25000,deadline-Date.now())))}));
+    return callModel(prompt,options,{provider:resolved.id,key:keys[resolved.id],model:defaultModel(resolved.id)},(url,init)=>fetch(url,{...init,signal:AbortSignal.timeout(Math.max(1000,Math.min(45000,deadline-Date.now())))}));
   }
   const getState=()=>({...structuredClone(state),workflows:state.workflows.map(w=>({...w,...workflowStatus(state,w)})),provider:{id:selected.id,configured:Boolean(keys[selected.id]),model:defaultModel(selected.id),customEndpoint:false},providers:PROVIDERS,hosted:true});
   async function execute(promptId,versionId,inputs,meta={}) {

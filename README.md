@@ -10,6 +10,10 @@ Sample mode is clearly labeled and uses simulated outputs, without any model cal
 
 Each browser has a separate server-saved workspace, identified by a private cookie. Keep cookies to return and export important work; there is no cross-device recovery or backup import yet. The public demo has bounded usage and storage. Hosted source and its security/usage notes are in [`web/PUBLIC-NOTEBOOK.md`](web/PUBLIC-NOTEBOOK.md). The local application below remains independent and can still use Ollama.
 
+### Model catalog and connections
+
+**Browse models** in Instructions or Settings to search hundreds of text-capable model options through OpenRouter. The public catalog refreshes periodically, with a dated fallback snapshot for outages; batch-only and non-text models are excluded. Direct connections are available for Anthropic, OpenAI, Gemini, Groq, Mistral, DeepSeek, xAI, Together AI, Fireworks AI, Cerebras, SambaNova, and NVIDIA NIM, alongside OpenRouter (13 connections total). Direct providers include starter IDs; enter other supported IDs manually. A model labeled **via OpenRouter** requires an OpenRouter key, not a key from the model's author. Catalog availability, account access, charges and model-specific requirements can vary; slow models may exceed interactive limits. The notebook executes text prompts, not image/audio generation or embeddings.
+
 ## Start
 
 ```sh
