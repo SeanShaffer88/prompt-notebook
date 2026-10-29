@@ -9,6 +9,32 @@ async function reviewed(state){const service=notebookService(state),prompt=state
 
 async function tested(state){const {service,c,prompt}=await reviewed(state);const suggestion=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{});const candidate=await service.route('POST',`/api/improvements/${suggestion.id}/candidate`,{template:suggestion.template});const experiment=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[c.versionId,candidate.id],testIds:[candidate.comparisonSource.testId]});return {service,prompt,candidate,experiment:state.experiments.find(e=>e.id===experiment.id),original:c.versionId};}
 
+test('activation gate rejects missing and sample checks on all activation routes; override saves immutable blockers and reason',async()=>{
+ const state=structuredClone(seed),{service,prompt,candidate,experiment,original}=await tested(state),body={winnerVersionId:candidate.id,expectedActiveVersionId:original};await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});
+ await assert.rejects(service.route('POST',`/api/experiments/${experiment.id}/activate`,body),/missing/);
+ await assert.rejects(service.route('POST',`/api/prompts/${prompt.id}/activate`,{versionId:candidate.id}),/missing/);
+ for(const overrideReason of ['', '   ', 'x'.repeat(3001)])await assert.rejects(service.route('POST',`/api/experiments/${experiment.id}/activate`,{...body,override:true,overrideReason}),/Override reason/);
+ assert.equal(state.activationHistory.length,0);assert.equal(prompt.activeVersionId,original);
+ await service.route('POST',`/api/experiments/${experiment.id}/workflow-check`,{workflowId:state.workflows[0].id,baselineVersionId:original,input:'notes'});
+ await assert.rejects(service.route('POST',`/api/experiments/${experiment.id}/activate`,body),/unverified/);
+ const activation=await service.route('POST',`/api/experiments/${experiment.id}/activate`,{...body,override:true,overrideReason:'Accept the sample check for this demonstration.'});assert.equal(activation.override.reason,'Accept the sample check for this demonstration.');assert.equal(activation.workflowGate.checks[0].problem,'unverified');assert.equal(state.activationHistory[0].id,activation.id);
+ const reopened=await notebookService(structuredClone(state)).route('GET','/api/state');assert.equal(reopened.activationHistory[0].override.reason,activation.override.reason);
+ await service.route('POST',`/api/experiments/${experiment.id}/rollback`,{activationId:activation.id,expectedActiveVersionId:candidate.id});assert.ok(state.activationHistory[0].rolledBackAt);assert.equal(prompt.activeVersionId,original);
+ const bundle=await service.route('POST','/api/bundle/export',{});const imported=await service.route('POST','/api/bundle/import',{bundle});assert.equal(imported.counts.activationHistory,1);assert.equal(state.activationHistory[1].override.reason,activation.override.reason);
+});
+
+test('fresh passing checks allow activation; changed contracts, new workflows and regressions block it',async()=>{
+ const state=structuredClone(seed),{service,prompt,candidate,experiment,original}=await tested(state);await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});for(const v of state.versions){v.provider='openai';v.model='gpt-4.1-mini';}
+ const previous=globalThis.fetch;globalThis.fetch=async()=>output('GOOD');
+ try{const live=notebookService(state,{openai:'test-key'}),w=state.workflows[0],body={winnerVersionId:candidate.id,expectedActiveVersionId:original},check=await live.route('POST',`/api/experiments/${experiment.id}/workflow-check`,{workflowId:w.id,baselineVersionId:original,input:'notes'});
+ assert.equal((await live.route('GET','/api/state')).activationGates[candidate.id].blocked,false);
+ const second={...structuredClone(w),id:'new-connected-workflow',title:'New dependency'};state.workflows.push(second);await assert.rejects(live.route('POST',`/api/experiments/${experiment.id}/activate`,body),/missing/);state.workflows.pop();
+ w.quality={contracts:w.promptIds.map(()=>({checks:{contains:'GOOD'},requiredFields:[],inputPerMillion:null,outputPerMillion:null})),maxCostUsd:null,maxLatencyMs:null};await assert.rejects(live.route('POST',`/api/experiments/${experiment.id}/activate`,body),/stale/);delete w.quality;
+ check.flags.push({kind:'regression',message:'Required field lost'});check.status='regression';await assert.rejects(live.route('POST',`/api/experiments/${experiment.id}/activate`,body),/regression/);check.flags=[];check.status='no-automatic-regressions';
+ const activation=await live.route('POST',`/api/experiments/${experiment.id}/activate`,body);assert.equal(activation.override,null);assert.equal(activation.workflowGate.blocked,false);assert.equal(prompt.activeVersionId,candidate.id);
+ }finally{globalThis.fetch=previous;}
+});
+
 test('portable bundles preserve evaluation graphs with new IDs and reject invalid imports atomically',async()=>{
  const state=structuredClone(seed),{service,experiment,candidate,prompt,original}=await tested(state);await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});await service.route('POST',`/api/experiments/${experiment.id}/workflow-check`,{workflowId:state.workflows[0].id,baselineVersionId:original,input:'notes'});
  const bundle=await service.route('POST','/api/bundle/export',{});assert.ok(!bundle.data.settings);const preview=await service.route('POST','/api/bundle/preview',{bundle});assert.equal(preview.counts.prompts,3);assert.equal(state.prompts.length,3);
@@ -59,7 +85,7 @@ test('experiment winner activation and rollback persist without modifying saved 
  const state=structuredClone(seed),{service,prompt,candidate,experiment,original}=await tested(state),versions=structuredClone(state.versions),runs=structuredClone(state.runs);
  const route=(action,body)=>service.route('POST',`/api/experiments/${experiment.id}/${action}`,body);
  await route('winner',{versionId:candidate.id});assert.equal(prompt.activeVersionId,original);
- const activation=await route('activate',{winnerVersionId:candidate.id,expectedActiveVersionId:original});assert.equal(prompt.activeVersionId,candidate.id);assert.equal(activation.fromVersionId,original);
+ const activation=await route('activate',{winnerVersionId:candidate.id,expectedActiveVersionId:original,override:true,overrideReason:'Exercise sample activation and rollback.'});assert.equal(prompt.activeVersionId,candidate.id);assert.equal(activation.fromVersionId,original);
  assert.equal((await route('activate',{winnerVersionId:candidate.id,expectedActiveVersionId:candidate.id})).alreadyActive,true);assert.equal(experiment.activations.length,1);
  await route('winner',{versionId:original});assert.equal(prompt.activeVersionId,candidate.id);
  await route('rollback',{activationId:activation.id,expectedActiveVersionId:candidate.id});assert.equal(prompt.activeVersionId,original);assert.ok(activation.rolledBackAt);
@@ -71,7 +97,7 @@ test('experiment decisions reject foreign versions, incomplete runs and stale ac
  const state=structuredClone(seed),{service,prompt,candidate,experiment,original}=await tested(state),route=(action,body)=>service.route('POST',`/api/experiments/${experiment.id}/${action}`,body);
  await assert.rejects(route('winner',{versionId:state.prompts[1].activeVersionId}));await assert.rejects(route('activate',{winnerVersionId:candidate.id,expectedActiveVersionId:original}));
  await route('winner',{versionId:candidate.id});await assert.rejects(route('activate',{winnerVersionId:original,expectedActiveVersionId:original}));await assert.rejects(route('activate',{winnerVersionId:candidate.id,expectedActiveVersionId:'stale'}),/changed/);
- const activation=await route('activate',{winnerVersionId:candidate.id,expectedActiveVersionId:original});prompt.activeVersionId=original;
+ const activation=await route('activate',{winnerVersionId:candidate.id,expectedActiveVersionId:original,override:true,overrideReason:'Exercise stale rollback validation.'});prompt.activeVersionId=original;
  await assert.rejects(route('rollback',{activationId:activation.id,expectedActiveVersionId:candidate.id}),/changed/);await assert.rejects(route('rollback',{activationId:activation.id,expectedActiveVersionId:original}),/no longer/);
  experiment.status='failed';await assert.rejects(route('winner',{versionId:original}),/Complete/);experiment.status='complete';state.runs.find(r=>r.id===experiment.results[0].runId).status='failed';await assert.rejects(route('winner',{versionId:original}),/Complete/);assert.equal(prompt.activeVersionId,original);
 });

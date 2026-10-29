@@ -1,5 +1,22 @@
 const coreRender=render;
 render=function(){coreRender();renderEnhancements();};
+function renderActivationGates(){
+ function setup(button,targetId,experiment){
+  const gate=data.activationGates?.[targetId] || {blocked:false,checks:[]};
+  const send=(overrideReason)=>{const body={expectedActiveVersionId:p().activeVersionId,...(experiment?{winnerVersionId:targetId}:{versionId:targetId}),...(overrideReason===undefined?{}:{override:true,overrideReason})};action(async()=>{await api(experiment?`/api/experiments/${experiment.id}/activate`:`/api/prompts/${promptId}/activate`,body);if($('#modal').open)$('#modal').close();},overrideReason===undefined?'Version activated. Workflow checks and activation history were saved.':'Version activated with a recorded manual override.');};
+  if(!gate.blocked){button.onclick=()=>send();return;}
+  button.disabled=true;button.setAttribute('data-gate-blocked','');
+  const box=document.createElement('section');box.className='box activation-blockers';box.innerHTML=`<h3>Activation blocked</h3><ul>${gate.checks.filter(c=>c.problem).map(c=>`<li>${esc(c.title)} · ${esc(c.problem)}</li>`).join('')}</ul><p class="quiet">Retest these workflows or record a manual override. Failed, inconclusive and simulated checks require an override too.</p><button type="button">Review manual override</button>`;button.after(box);
+  box.querySelector('button').onclick=()=>{modal(`<h2>Manual activation override</h2><p>The server rechecks workflow readiness when you submit. The reason and blockers are saved with this activation.</p><ul>${gate.checks.filter(c=>c.problem).map(c=>`<li>${esc(c.title)} · ${esc(c.problem)}</li>`).join('')}</ul><label for="activation-override-reason">Reason for bypassing workflow checks</label><textarea id="activation-override-reason" maxlength="3000" placeholder="Explain why you are accepting these unresolved checks"></textarea><button id="confirm-activation-override" class="primary">Save reason & activate</button>`);bind('confirm-activation-override',()=>{const reason=$('#activation-override-reason').value.trim();if(!reason){status('Enter an override reason before activating.',true);return;}send(reason);});};
+ }
+ if(tab==='notebook'&&$('#activate'))setup($('#activate'),v().id);
+ document.querySelectorAll('[data-history-activate]').forEach(b=>setup(b,b.dataset.historyActivate));
+ document.querySelectorAll('[data-activate-experiment]').forEach(b=>{const e=data.experiments.find(e=>e.id===b.dataset.activateExperiment);if(e)setup(b,e.winnerVersionId,e);});
+ if(tab==='history'){
+  const history=(data.activationHistory || []).filter(a=>a.promptId===promptId).slice().reverse();
+  $('#content').insertAdjacentHTML('beforeend',`<section class="box"><h2>Activation audit history</h2>${history.map(a=>`<details><summary>v${data.versions.find(v=>v.id===a.fromVersionId)?.number} → v${data.versions.find(v=>v.id===a.toVersionId)?.number} · ${time(a.createdAt)}${a.override?' · manual override':''}${a.rolledBackAt?' · rolled back':''}</summary>${a.override?`<p>Reason: ${esc(a.override.reason)}</p>`:'<p>Workflow gate passed.</p>'}<ul>${(a.workflowGate?.checks || []).map(c=>`<li>${esc(c.title)} · ${esc(c.problem || 'passed')}${c.checkId?' · check '+esc(c.checkId):''}</li>`).join('')}</ul></details>`).join('')||'<p>No activations recorded yet.</p>'}</section>`);
+ }
+}
 function workflowCheckHtml(check){return `<details class="box" open><summary>${esc(check.plan.workflow.title)} · ${esc(check.status)}${check.stale?' · STALE — retest':''} · ${time(check.createdAt)}</summary>${check.flags.map(f=>`<p class="${f.kind==='regression'||f.kind==='failure'?'error':'quiet'}">${esc(f.kind)}${f.index===undefined?'':' · step '+(f.index+1)}: ${esc(f.message)}</p>`).join('')}<div class="experiment-pair">${Object.entries(check.branches).map(([branch,result])=>`<section><h3>${branch==='baseline'?'Current active versions':'Proposed winner'} · ${esc(result.status)}</h3><p class="quiet">${result.latencyMs} ms · ${result.costUsd==null?'cost unknown':'estimated $'+result.costUsd.toFixed(6)}</p>${result.steps.map(step=>{const run=data.runs.find(r=>r.id===step.runId);return `<h4>Step ${step.index+1} · ${esc(data.prompts.find(p=>p.id===step.promptId)?.title)} · v${data.versions.find(v=>v.id===step.versionId)?.number}</h4><p class="output">${esc(run?.output || step.error)}</p>${run?runMeta(run):''}<p class="quiet">Rules: ${step.rule?.pass===true?'pass':step.rule?.pass===false?'fail':'unscored'} · JSON fields: ${step.fieldsPass===null?'unscored':step.fieldsPass?'pass':'fail'}</p>`;}).join('')}</section>`).join('')}</div></details>`;}
 function renderEnhancements(){
  renderDatasetTools();
@@ -19,6 +36,7 @@ function renderEnhancements(){
   modal(`<h2>Contracts & budgets · ${esc(w.title)}</h2><p>One contract per step, in workflow order. Rules support contains, excludes, maxWords and json. requiredFields lists required top-level JSON fields. Prices are your estimates in USD per million tokens for each step’s model; null means unknown. Budgets may be null.</p><label for="workflow-quality">Quality configuration (JSON)</label><textarea id="workflow-quality" class="prompt-editor">${esc(JSON.stringify(quality,null,2))}</textarea><button id="save-workflow-quality" class="primary">Save contracts & budgets</button>`);
   bind('save-workflow-quality',()=>{let body;try{body=JSON.parse($('#workflow-quality').value);}catch{status('Enter valid JSON.',true);return;}action(async()=>{await api(`/api/workflows/${w.id}/quality`,body);$('#modal').close();},'Contracts and budgets saved. Retest workflows after changing them.');});
  });
+ renderActivationGates();
  document.querySelectorAll('[data-check-experiment]').forEach(b=>b.onclick=()=>{const body={workflowId:b.dataset.checkWorkflow,baselineVersionId:p().activeVersionId,input:$('#wf-check-input-'+b.dataset.checkExperiment+'-'+b.dataset.checkWorkflow).value};action(()=>api(`/api/experiments/${b.dataset.checkExperiment}/workflow-check`,body),'Workflow comparison saved. Review regressions, unscored changes and stale checks before activation.');});
 }
 function renderBundleTools(){if(tab!=='history')return;

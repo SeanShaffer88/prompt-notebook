@@ -36,8 +36,9 @@ test('mixed-provider workflow forwards only the corresponding key and records ea
  const state=structuredClone(seed),api=notebookService(state).route,w=state.workflows[0];
  const a=await api('POST',`/api/prompts/${w.promptIds[0]}/versions`,{provider:'openai',model:'gpt-4.1-mini',template:'Summarize {{notes}}'});
  const b=await api('POST',`/api/prompts/${w.promptIds[1]}/versions`,{provider:'gemini',model:'gemini-3.8-flash',template:'Memo {{brief}}'});
- await api('POST',`/api/prompts/${a.promptId}/activate`,{versionId:a.id});await api('POST',`/api/prompts/${b.promptId}/activate`,{versionId:b.id});
+ await api('POST',`/api/prompts/${a.promptId}/activate`,{versionId:a.id,override:true,overrideReason:'Set up isolated adapter test.'});await api('POST',`/api/prompts/${b.promptId}/activate`,{versionId:b.id,override:true,overrideReason:'Set up isolated adapter test.'});
  const old=globalThis.fetch,requests=[];
  globalThis.fetch=async(url,init)=>{requests.push({url,...init});return {ok:true,json:async()=>url.includes('openai.com')?{status:'completed',output:[{type:'message',content:[{type:'output_text',text:'Brief result'}]}]}:{candidates:[{content:{parts:[{text:'Memo result'}]},finishReason:'STOP'}]}};};
  try{const result=await notebookService(state,{openai:'openai-secret',gemini:'gemini-secret'}).route('POST',`/api/workflows/${w.id}/run`,{input:'notes'});assert.equal(result.status,'complete');assert.equal(requests[0].headers.Authorization,'Bearer openai-secret');assert.equal(requests[1].headers['x-goog-api-key'],'gemini-secret');assert.ok(!JSON.stringify(requests[0]).includes('gemini-secret'));assert.ok(!JSON.stringify(requests[1]).includes('openai-secret'));assert.deepEqual(state.runs.map(r=>r.provider),['openai','gemini']);assert.ok(!JSON.stringify(state).includes('secret'));}finally{globalThis.fetch=old;}
 });
+

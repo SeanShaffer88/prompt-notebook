@@ -13,7 +13,7 @@ test('sample mode completes correction, comparison and workflow without external
  const example=await api('POST',`/api/prompts/${p.id}/tests`,{title:'Evidence',inputs:{source_notes:'pilot'},checks:{contains:'productivity'}});
  const exp=await api('POST','/api/experiments',{promptId:p.id,versionIds:[p.activeVersionId,candidate.id],testIds:[example.id]});assert.equal(exp.status,'complete');assert.equal(exp.results.length,2);
  await api('POST',`/api/workflows/${state.workflows[0].id}/run`,{input:'pilot'});
- await api('POST',`/api/prompts/${p.id}/activate`,{versionId:candidate.id});assert.equal((await api('GET','/api/state',{})).workflows[0].status,'Needs retest');
+ await api('POST',`/api/prompts/${p.id}/activate`,{versionId:candidate.id,override:true,overrideReason:'Exercise sample workflow freshness.'});assert.equal((await api('GET','/api/state',{})).workflows[0].status,'Needs retest');
  }finally{globalThis.fetch=originalFetch;}
 });
 test('live requests use only Anthropic and do not persist keys; failures do not become sample answers',async()=>{
@@ -32,3 +32,4 @@ test('each visitor state is independent and settings cannot select a custom prox
  await api('POST','/api/settings',{model:'test-model',base:'http://localhost:11434',apiKey:'never-store-this'});
  assert.deepEqual(a.settings,{provider:'anthropic',model:'test-model',models:{anthropic:'test-model'}});assert.ok(!JSON.stringify(a).includes('never-store-this'));assert.ok(!a.settings.base);
 });
+

@@ -9,6 +9,20 @@ export function workflowPlan(state,experiment,workflow,defaultModel){
 export function enhancementState(state,defaultModel){return (state.workflowChecks || []).map(check=>{
  try{const e=state.experiments.find(e=>e.id===check.experimentId),w=state.workflows.find(w=>w.id===check.workflowId);return {...check,stale:JSON.stringify(workflowPlan(state,e,w,defaultModel))!==check.signature};}catch{return {...check,stale:true};}
 });}
+export function activationGate(state,promptId,versionId,defaultModel){
+ const prompt=state.prompts.find(p=>p.id===promptId);if(prompt?.activeVersionId===versionId)return {blocked:false,checks:[]};
+ const checks=enhancementState(state,defaultModel),affected=state.workflows.filter(w=>w.promptIds.includes(promptId));
+ const items=affected.map(w=>{
+  const check=checks.slice().reverse().find(c=>c.workflowId===w.id&&c.promptId===promptId&&c.winnerVersionId===versionId);
+  let problem=null;
+  if(!check)problem='missing';
+  else if(check.stale||check.baselineVersionId!==prompt.activeVersionId)problem='stale';
+  else if(check.status==='regression'||check.flags.some(f=>f.kind==='regression'||f.kind==='failure'))problem='regression';
+  else if(check.status==='running'||check.branches.baseline.status!=='complete'||check.branches.candidate.status!=='complete')problem='incomplete';
+  else if(check.flags.some(f=>f.kind==='sample'||f.kind==='inconclusive')||check.branches.baseline.simulated||check.branches.candidate.simulated)problem='unverified';
+  return {workflowId:w.id,title:w.title,checkId:check?.id || null,problem};
+ });return {blocked:items.some(c=>c.problem),checks:items};
+}
 export function enhancementService(state,{execute,preflight,defaultModel}){
  state.workflowChecks ||= [];
  state.datasets ||= [];
