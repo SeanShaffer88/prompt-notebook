@@ -135,6 +135,27 @@ export function notebookService(state, credentials='') {
       let template=result.output.trim().replace(/^```[^\n]*\n/,'').replace(/\n```$/,'');requireValue(JSON.stringify(variables(template).sort())===JSON.stringify(variables(v.template).sort()),'Suggestion changed template variables. Please edit the prompt manually.',422);
       store.mutate(s=>{Object.assign(s.corrections.find(x=>x.id===c.id),{suggestion:template,suggestionModel:result.model,suggestedAt:now()});});return {template};
     }
+    const decision=path.match(/^\/api\/experiments\/([^/]+)\/(winner|activate|rollback)$/);
+    if(method==='POST' && decision){
+      const [,experimentId,action]=decision,e=state.experiments.find(e=>e.id===experimentId);requireValue(e,'Experiment not found.',404);
+      const prompt=state.prompts.find(p=>p.id===e.promptId);requireValue(prompt,'Prompt not found.',404);
+      requireValue(e.status==='complete' && e.testIds.length>0 && e.versionIds.every(vid=>e.testIds.every(tid=>{const result=e.results.find(r=>r.versionId===vid && r.testId===tid);return state.runs.some(r=>r.id===result?.runId && r.experimentId===e.id && r.versionId===vid && r.status==='complete');})),'Complete all test runs before selecting or activating a winner.',422);
+      if(action==='winner'){
+        requireValue(body.versionId===null || e.versionIds.includes(body.versionId),'Choose a version tested in this experiment.');
+        e.winnerVersionId=body.versionId;e.reviewedAt=now();return e;
+      }
+      requireValue(body.expectedActiveVersionId===prompt.activeVersionId,'The active version changed. Refresh and review before continuing.',409);
+      if(action==='activate'){
+        requireValue(e.versionIds.includes(e.winnerVersionId) && body.winnerVersionId===e.winnerVersionId,'Select and review the winning version first.',422);
+        versionFor(state,prompt.id,e.winnerVersionId);
+        if(prompt.activeVersionId===e.winnerVersionId)return {activeVersionId:prompt.activeVersionId,alreadyActive:true};
+        const activation={id:id(),fromVersionId:prompt.activeVersionId,toVersionId:e.winnerVersionId,createdAt:now()};
+        e.activations ||= [];e.activations.push(activation);prompt.activeVersionId=e.winnerVersionId;return activation;
+      }
+      const activation=e.activations?.find(a=>a.id===body.activationId);
+      requireValue(activation && !activation.rolledBackAt && prompt.activeVersionId===activation.toVersionId,'This activation can no longer be rolled back directly. Choose a saved version from History.',409);
+      versionFor(state,prompt.id,activation.fromVersionId);prompt.activeVersionId=activation.fromVersionId;activation.rolledBackAt=now();return {activeVersionId:prompt.activeVersionId};
+    }
     if(method==='POST' && path==='/api/experiments') {
       const s=store.read();const promptId=body.promptId;const versionIds=[...new Set(body.versionIds || [])];requireValue(versionIds.length===2,'Select two distinct versions.');versionIds.forEach(v=>versionFor(s,promptId,v));
       const tests=s.tests.filter(t=>t.promptId===promptId && (!body.testIds || body.testIds.includes(t.id)));requireValue(tests.length>0 && tests.length<=3,'Public demo comparisons support 1–3 saved examples.');
