@@ -12,7 +12,7 @@ async function tested(state){const {service,c,prompt}=await reviewed(state);cons
 test('browser API sends tab keys for batch and automatic execution but not metadata or export routes',async()=>{
  const {readFile}=await import('node:fs/promises'),{runInNewContext}=await import('node:vm'),source=await readFile(new URL('../public/app.js',import.meta.url),'utf8'),requests=[];
  const api=runInNewContext(source.slice(source.indexOf('function needsProviderKeys'),source.indexOf('async function refresh'))+'\napi',{providerKeys:{openai:'test-header-key'},fetch:async(path,init)=>{requests.push({path,init});return {ok:true,json:async()=>({ok:true})};}});
- for(const path of ['/api/experiments/e/workflow-batch','/api/workflow-batches/b/next','/api/auto/run-next','/api/auto/workflows/w/compare-good']){await api(path,{});assert.ok(requests.at(-1).init.headers['x-provider-keys']);}
+ for(const path of ['/api/experiments/e/workflow-batch','/api/workflow-batches/b/next','/api/auto/run-next','/api/auto/workflows/w/compare-good','/api/repairs/r/test-next']){await api(path,{});assert.ok(requests.at(-1).init.headers['x-provider-keys']);}
  for(const path of ['/api/bundle/export','/api/auto/settings','/api/auto/alerts/a/read']){await api(path,{});assert.equal(requests.at(-1).init.headers['x-provider-keys'],undefined);}
 });
 

@@ -3,6 +3,7 @@ import { callModel, PROVIDERS, providerInfo, normalizeKeys, validateModelId } fr
 import {enhancementService,enhancementState,activationGate} from './notebook-enhancements.mjs';
 import {bundleService} from './notebook-bundles.mjs';
 import {automationService} from './notebook-automation.mjs';
+import {repairService,approvedRepair} from './notebook-repairs.mjs';
 export function notebookService(state, credentials='') {
   const store={read:()=>structuredClone(state),mutate:fn=>fn(state)};
   state.comparisons ||= [];
@@ -36,11 +37,12 @@ export function notebookService(state, credentials='') {
     // Fixed destination: no custom endpoints, no server-funded keys, no access to local services.
     return callModel(prompt,options,{provider:resolved.id,key:keys[resolved.id],model:defaultModel(resolved.id)},(url,init)=>fetch(url,{...init,signal:AbortSignal.timeout(Math.max(1000,Math.min(45000,deadline-Date.now())))}));
   }
-  const getState=()=>({...structuredClone(state),activationGates:Object.fromEntries(state.versions.map(v=>[v.id,activationGate(state,v.promptId,v.id,defaultModel)])),workflowChecks:enhancementState(state,defaultModel),workflows:state.workflows.map(w=>({...w,...workflowStatus(state,w)})),provider:{id:selected.id,configured:Boolean(keys[selected.id]),model:defaultModel(selected.id),customEndpoint:false},providers:PROVIDERS,hosted:true});
+  const getState=()=>({...structuredClone(state),repairViews:Object.fromEntries(state.repairCases.map(r=>[r.id,repairs.view(r)])),activationGates:Object.fromEntries(state.versions.map(v=>[v.id,activationGate(state,v.promptId,v.id,defaultModel)])),workflowChecks:enhancementState(state,defaultModel),workflows:state.workflows.map(w=>({...w,...workflowStatus(state,w)})),provider:{id:selected.id,configured:Boolean(keys[selected.id]),model:defaultModel(selected.id),customEndpoint:false},providers:PROVIDERS,hosted:true});
   function activateVersion(promptId,versionId,body,experimentId=null){
     const version=versionFor(state,promptId,versionId),prompt=state.prompts.find(p=>p.id===promptId);
     if(body.expectedActiveVersionId!==undefined)requireValue(body.expectedActiveVersionId===prompt.activeVersionId,'The active version changed. Refresh and review before continuing.',409);
     if(prompt.activeVersionId===version.id)return {activeVersionId:version.id,alreadyActive:true};
+    if(version.repairCaseId)requireValue(approvedRepair(state,promptId,version.id,defaultModel)?.repairCaseId===version.repairCaseId,'Approve this repair winner after fresh workflow tests before activation. Manual override cannot bypass repair approval.',422);
     const gate=activationGate(state,promptId,version.id,defaultModel);
     requireValue(body.override===undefined||typeof body.override==='boolean','Override must be true or false.');
     requireValue(!gate.blocked||body.override===true,'Activation blocked by connected workflow checks: '+gate.checks.filter(c=>c.problem).map(c=>c.title+' ('+c.problem+')').join('; ')+'. Retest or provide a manual override reason.',422);
@@ -58,8 +60,11 @@ export function notebookService(state, credentials='') {
 
   const enhancements=enhancementService(state,{execute,preflight,defaultModel});
   const automation=automationService(state,{enhancements,preflight,defaultModel});
+  const repairs=repairService(state,{modelCall,createVersion,preflight,defaultModel,enhancements,activateVersion});
   const bundles=bundleService(state);
   async function route(method,path,body) {
+    if(method==='POST'&&path==='/api/repairs/sync'){repairs.syncAlerts();return {ok:true};}
+    const repaired=await repairs.route(method,path,body);if(repaired!==undefined)return repaired;
     const automatic=await automation.route(method,path,body);if(automatic!==undefined)return automatic;
     const bundle=await bundles(method,path,body);if(bundle!==undefined)return bundle;
     const enhanced=await enhancements.route(method,path,body);if(enhanced!==undefined)return enhanced;
@@ -201,6 +206,6 @@ export function notebookService(state, credentials='') {
     throw Object.assign(new Error('Route not found.'),{status:404});
   }
 
-  return {route:async(method,path,body)=>{const before=method==='POST'?automation.begin():null;const result=await route(method,path,body);if(before&&!path.startsWith('/api/auto/'))automation.observe(before,path);return result;}};
+  return {route:async(method,path,body)=>{const before=method==='POST'?automation.begin():null;const result=await route(method,path,body);if(before){repairs.syncAlerts();if(!path.startsWith('/api/auto/'))automation.observe(before,path);}return result;}};
 }
 

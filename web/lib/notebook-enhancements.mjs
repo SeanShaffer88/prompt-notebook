@@ -1,4 +1,5 @@
 import {id,now,requireValue,text,variables,versionFor,cleanChecks,evaluate} from './notebook-core.mjs';
+import {approvedRepair} from './notebook-repairs.mjs';
 
 const numeric=(value,name,max=1e9)=>{if(value===null || value===undefined || value==='')return null;requireValue(typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=max,`Invalid ${name}.`);return value;};
 export function workflowPlan(state,experiment,workflow,defaultModel){
@@ -11,6 +12,7 @@ export function enhancementState(state,defaultModel){return (state.workflowCheck
 });}
 export function activationGate(state,promptId,versionId,defaultModel){
  const prompt=state.prompts.find(p=>p.id===promptId);if(prompt?.activeVersionId===versionId)return {blocked:false,checks:[]};
+ const repaired=approvedRepair(state,promptId,versionId,defaultModel);if(repaired)return repaired;
  const checks=enhancementState(state,defaultModel),affected=state.workflows.filter(w=>w.promptIds.includes(promptId));
  const items=affected.map(w=>{
   const check=checks.slice().reverse().find(c=>c.workflowId===w.id&&c.promptId===promptId&&c.winnerVersionId===versionId);
