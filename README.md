@@ -12,6 +12,8 @@ Each browser has a separate server-saved workspace, identified by a private cook
 
 ### Model catalog and connections
 
+**Compare models** runs the same saved prompt and inputs against 2–4 models concurrently, including across providers. Add models manually or from the catalog, then run them together. Saved results appear side by side with model identity, timing, token usage and input/version snapshots. Individual failures do not discard other responses. Live comparisons make one billable call per model and require every selected provider's key; no-key comparisons are clearly marked simulated samples.
+
 **Browse models** in Instructions or Settings to search hundreds of text-capable model options through OpenRouter. The public catalog refreshes periodically, with a dated fallback snapshot for outages; batch-only and non-text models are excluded. Direct connections are available for Anthropic, OpenAI, Gemini, Groq, Mistral, DeepSeek, xAI, Together AI, Fireworks AI, Cerebras, SambaNova, and NVIDIA NIM, alongside OpenRouter (13 connections total). Direct providers include starter IDs; enter other supported IDs manually. A model labeled **via OpenRouter** requires an OpenRouter key, not a key from the model's author. Catalog availability, account access, charges and model-specific requirements can vary; slow models may exceed interactive limits. The notebook executes text prompts, not image/audio generation or embeddings.
 
 ## Start

@@ -28,10 +28,14 @@ export function normalizeKeys(input){
   }
   return keys;
 }
+export function validateModelId(model){
+  requireValue(typeof model==='string' && /^[a-zA-Z0-9~][a-zA-Z0-9._:/~-]{0,199}$/.test(model) && !model.includes('://') && !model.includes('..') && !model.endsWith(':batch'),'Use an interactive model ID, not a URL or batch-only model.');
+  return model;
+}
 export async function callModel(prompt, options, config, fetcher=fetch){
   const provider=providerInfo(config.provider),model=options.model || config.model || provider.defaultModel;
   requireValue(config.key,`Connect a ${provider.name} key in Settings before running this version.`,422);
-  requireValue(typeof model==='string' && /^[a-zA-Z0-9~][a-zA-Z0-9._:/~-]{0,199}$/.test(model) && !model.includes('://') && !model.includes('..') && !model.endsWith(':batch'),'Use an interactive model ID, not a URL or batch-only model.');
+  validateModelId(model);
   const limit=Math.min(options.maxTokens || 1000,4096);
   let url,body,headers={'content-type':'application/json'};
   if(provider.protocol==='anthropic'){
