@@ -11,19 +11,20 @@ export function normalizeRouterModels(rows){
   return [...unique.values()];
 }
 let cached,pending;
-export async function modelCatalog(fetcher=fetch){
-  if(cached && Date.now()-cached.at<600000)return cached.value;
+const publicFetch=(url,options)=>globalThis.fetch(url,options);
+export async function modelCatalog(fetcher=publicFetch){
+  if(fetcher===publicFetch && cached && Date.now()-cached.at<600000)return cached.value;
   if(pending)return pending;
   pending=(async()=>{
     let models=snapshot.models,source='snapshot',updatedAt=snapshot.updatedAt;
     try{
-      const response=await fetcher('https://openrouter.ai/api/v1/models',{redirect:'error',signal:AbortSignal.timeout(8000),headers:{Accept:'application/json'}});
+      const response=await fetcher('https://openrouter.ai/api/v1/models',{redirect:'manual',signal:AbortSignal.timeout(8000),headers:{Accept:'application/json'}});
       if(!response.ok)throw Error('Catalog unavailable');const data=await response.json();const live=normalizeRouterModels(data.data);
       if(!live.length)throw Error('Empty catalog');models=live;source='live';updatedAt=new Date().toISOString();
-    }catch{}
+    }catch(error){console.warn('Public model catalog refresh failed:',error instanceof Error?error.message:'unknown error');}
     const defaults=PROVIDERS.filter(p=>p.id!=='openrouter').map(p=>({id:p.defaultModel,name:p.defaultModel,provider:p.id,contextLength:null}));
     const value={models:[...defaults,...models],providers:PROVIDERS.map(p=>({id:p.id,name:p.name})),source,updatedAt,note:'OpenRouter catalog plus direct-provider starter models. Availability and billing depend on your account. Batch-only and non-text models are excluded.'};
-    if(fetcher===fetch)cached={at:Date.now(),value};return value;
+    if(fetcher===publicFetch)cached={at:Date.now(),value};return value;
   })();
   try{return await pending;}finally{pending=undefined;}
 }
