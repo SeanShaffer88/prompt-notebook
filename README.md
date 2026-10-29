@@ -2,6 +2,14 @@
 
 A working personal AI notebook: reusable prompts, immutable versions, real Anthropic-compatible execution, corrections, AI-suggested candidates, experiments, and connected workflows. No npm dependencies. Requires Node.js 22.13 or newer (tested with Node 26).
 
+## Try it in your browser
+
+**[Open the public notebook](https://prompt-notebook-lab.copperbun512.chatgpt.site)** — no installation or login required.
+
+Sample mode is clearly labeled and uses simulated outputs, without any model calls. For real execution, connect your own Anthropic API key in Settings. The key stays in tab memory, is sent over HTTPS only for requested model operations, and is not saved or exported. Reloading clears it.
+
+Each browser has a separate server-saved workspace, identified by a private cookie. Keep cookies to return and export important work; there is no cross-device recovery or backup import yet. The public demo has bounded usage and storage. Hosted source and its security/usage notes are in [`web/PUBLIC-NOTEBOOK.md`](web/PUBLIC-NOTEBOOK.md). The local application below remains independent and can still use Ollama.
+
 ## Start
 
 ```sh
