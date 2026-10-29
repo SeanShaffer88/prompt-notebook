@@ -56,9 +56,9 @@ export async function callModel(prompt, options, config, fetcher=fetch){
   // Workers supports manual/follow, not redirect:error. Manual keeps credentials
   // on the selected origin; any 3xx response is rejected by the HTTP check below.
   try{response=await fetcher(url,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(45000),headers,body:JSON.stringify(body)});}
-  catch(error){throw Object.assign(new Error(error.name==='TimeoutError'?`${provider.name} request timed out. Try a faster model or fewer examples.`:`Could not connect to ${provider.name}.`),{status:502});}
+  catch(error){throw Object.assign(new Error(error.name==='TimeoutError'?`${provider.name} request timed out. Try a faster model or fewer examples.`:`Could not connect to ${provider.name}.`),{status:502,retryable:true});}
   const data=await response.json().catch(()=>({}));
-  requireValue(response.ok,`${provider.name} request failed (HTTP ${response.status}). Check this provider's key, model access, or quota.`,502);
+  if(!response.ok)throw Object.assign(new Error(`${provider.name} request failed (HTTP ${response.status}). Check this provider's key, model access, or quota.`),{status:502,upstreamStatus:response.status,retryable:response.status===429||response.status>=500});
   requireValue(!data.error && data.status!=='failed',`${provider.name} could not complete the response.`,502);
   let output,usage,stopReason,actualModel;
   if(provider.protocol==='anthropic'){
