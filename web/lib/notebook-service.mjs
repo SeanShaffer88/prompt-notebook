@@ -1,7 +1,8 @@
 import { id, now, requireValue, text, variables, fill, evaluate, cleanChecks, versionFor, createVersion as coreCreateVersion, workflowStatus } from './notebook-core.mjs';
-import { callModel, PROVIDERS, providerInfo, normalizeKeys } from './providers.mjs';
+import { callModel, PROVIDERS, providerInfo, normalizeKeys, validateModelId } from './providers.mjs';
 export function notebookService(state, credentials='') {
   const store={read:()=>structuredClone(state),mutate:fn=>fn(state)};
+  state.comparisons ||= [];
   const keys=normalizeKeys(typeof credentials==='string'?{anthropic:credentials}:credentials);
   let selected=providerInfo(state.settings?.provider || 'anthropic');
   // Existing hosted versions predate provider selection and were Anthropic versions.
@@ -30,9 +31,9 @@ export function notebookService(state, credentials='') {
     return callModel(prompt,options,{provider:resolved.id,key:keys[resolved.id],model:defaultModel(resolved.id)},(url,init)=>fetch(url,{...init,signal:AbortSignal.timeout(Math.max(1000,Math.min(45000,deadline-Date.now())))}));
   }
   const getState=()=>({...structuredClone(state),workflows:state.workflows.map(w=>({...w,...workflowStatus(state,w)})),provider:{id:selected.id,configured:Boolean(keys[selected.id]),model:defaultModel(selected.id),customEndpoint:false},providers:PROVIDERS,hosted:true});
-  async function execute(promptId,versionId,inputs,meta={}) {
-    const version=versionFor(store.read(),promptId,versionId);preflight([version]); const rendered=fill(version.template,inputs);
-    const run={id:id(),promptId,versionId:version.id,inputs,rendered,status:'running',createdAt:now(),...meta};
+  async function execute(promptId,versionId,inputs,meta={},override={}) {
+    const version={...versionFor(store.read(),promptId,versionId),...override};preflight([version]); const rendered=fill(version.template,inputs);
+    const run={id:id(),promptId,versionId:version.id,inputs,rendered,provider:version.provider,requestedModel:version.model || defaultModel(version.provider),maxTokens:version.maxTokens,status:'running',createdAt:now(),...meta};
     store.mutate(s=>s.runs.push(run));
     try { const result=await modelCall(rendered,version); const done={...run,...result,status:'complete',finishedAt:now()};store.mutate(s=>Object.assign(s.runs.find(r=>r.id===run.id),done));return done; }
     catch(e) { store.mutate(s=>Object.assign(s.runs.find(r=>r.id===run.id),{status:'failed',error:e.message,finishedAt:now()}));throw e; }
@@ -41,6 +42,25 @@ export function notebookService(state, credentials='') {
   async function route(method,path,body) {
     if(method==='GET' && path==='/api/state') return getState();
     if(method==='GET' && path==='/api/export') return store.read();
+    if(method==='POST' && path==='/api/comparisons'){
+      const version=versionFor(store.read(),body.promptId,body.versionId);
+      const rendered=fill(version.template,body.inputs);
+      requireValue(Array.isArray(body.targets) && body.targets.length>=2 && body.targets.length<=4,'Choose 2–4 models for a comparison.');
+      const targets=body.targets.map(target=>({provider:providerInfo(target?.provider).id,model:validateModelId(text(target?.model,'Model ID',200))}));
+      requireValue(new Set(targets.map(t=>t.provider+'\0'+t.model)).size===targets.length,'Choose distinct provider/model combinations.');
+      preflight(targets);
+      const estimatedSize=JSON.stringify(state).length+JSON.stringify({version,inputs:body.inputs,targets}).length+targets.length*(JSON.stringify(body.inputs).length+JSON.stringify(rendered).length+version.maxTokens*16+4000);
+      requireValue(estimatedSize<=700000,'This comparison may exceed public workspace storage. Use fewer models, smaller inputs, or the local app.',413);
+      const comparison={id:id(),promptId:body.promptId,versionId:version.id,versionSnapshot:structuredClone(version),inputs:structuredClone(body.inputs),status:'running',createdAt:now(),results:targets.map(target=>({...target,status:'running',runId:null}))};
+      store.mutate(s=>s.comparisons.push(comparison));
+      const settled=await Promise.allSettled(targets.map(async(target,index)=>{
+        try{const run=await execute(body.promptId,version.id,body.inputs,{comparisonId:comparison.id,comparisonIndex:index},target);Object.assign(comparison.results[index],{runId:run.id,status:'complete'});}
+        catch(error){const run=state.runs.find(r=>r.comparisonId===comparison.id&&r.comparisonIndex===index);Object.assign(comparison.results[index],{runId:run?.id || null,status:'failed',error:error.message});}
+      }));
+      settled.forEach((result,index)=>{if(result.status==='rejected')Object.assign(comparison.results[index],{status:'failed',error:'This model could not complete.'});});
+      const failed=comparison.results.filter(r=>r.status==='failed').length;
+      comparison.status=failed===targets.length?'failed':failed?'partial':'complete';comparison.finishedAt=now();return comparison;
+    }
     if(method==='POST' && path==='/api/settings') {
       const chosen=providerInfo(body.provider || selected.id),model=text(body.model,'Model ID',200);
       store.mutate(s=>{s.settings={provider:chosen.id,model,models:{...(s.settings?.models || {}),[chosen.id]:model}};});selected=chosen;return {ok:true,keySessionOnly:true};
