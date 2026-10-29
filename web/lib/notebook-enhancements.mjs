@@ -11,7 +11,13 @@ export function enhancementState(state,defaultModel){return (state.workflowCheck
 });}
 export function enhancementService(state,{execute,preflight,defaultModel}){
  state.workflowChecks ||= [];
+ state.datasets ||= [];
  async function route(method,path,body){
+  if(method==='POST'&&path==='/api/datasets'){
+   versionFor(state,body.promptId);requireValue(Array.isArray(body.testIds)&&body.testIds.length>0&&body.testIds.length<=3,'Select 1–3 examples for a reusable dataset.');
+   const examples=[...new Set(body.testIds)].map(tid=>{const t=state.tests.find(t=>t.id===tid&&t.promptId===body.promptId);requireValue(t,'Dataset example does not belong to this prompt.');return {...structuredClone(t),id:id()};});
+   const dataset={id:id(),promptId:body.promptId,title:text(body.title,'Dataset title',160),examples,createdAt:now()};state.datasets.push(dataset);return dataset;
+  }
   const quality=path.match(/^\/api\/workflows\/([^/]+)\/quality$/);
   if(method==='POST'&&quality){
    const w=state.workflows.find(w=>w.id===quality[1]);requireValue(w,'Workflow not found.',404);

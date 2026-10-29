@@ -33,3 +33,6 @@ Completed experiments allow a human to pick either tested version as winner, the
 
 ### Slice 1: workflow quality checks
 Test each affected workflow before promotion using the current active version and proposed experiment winner, without activating either. All step versions and model defaults are pinned. Step contracts support text rules, JSON validity and required top-level fields. Per-step user-supplied token prices enable estimated cost budgets; latency budgets use summed model-call latency. Missing prices remain unknown. Changed outputs require human review; previously passing rules or budgets that fail are regressions. Sample results cannot establish quality. Checks become stale after relevant version, model default, winner or contract changes. Experiment summaries show rule results and missing workflow coverage.
+
+### Slice 2: reusable evaluations
+Save 1–3 checked examples as a named dataset snapshot. Experiments can use that dataset and repeat each example 1–3 times, up to six example/trial pairs. Every trial is retained and shown independently. History offers capture of failed or successful responses as regression examples with optional expected output and rule checks; source run provenance is preserved.

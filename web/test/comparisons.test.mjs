@@ -9,6 +9,15 @@ async function reviewed(state){const service=notebookService(state),prompt=state
 
 async function tested(state){const {service,c,prompt}=await reviewed(state);const suggestion=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{});const candidate=await service.route('POST',`/api/improvements/${suggestion.id}/candidate`,{template:suggestion.template});const experiment=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[c.versionId,candidate.id],testIds:[candidate.comparisonSource.testId]});return {service,prompt,candidate,experiment:state.experiments.find(e=>e.id===experiment.id),original:c.versionId};}
 
+test('datasets snapshot examples and repeated trials preserve every output and rule result',async()=>{
+ const state=structuredClone(seed),{service,prompt,candidate,original}=await tested(state);const example=state.tests[0];const dataset=await service.route('POST','/api/datasets',{promptId:prompt.id,title:'Reusable evidence cases',testIds:[example.id]});example.inputs.source_notes='Changed later';assert.notEqual(dataset.examples[0].inputs.source_notes,example.inputs.source_notes);
+ const e=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[original,candidate.id],datasetId:dataset.id,repeats:3});assert.equal(e.results.length,6);assert.deepEqual([...new Set(e.results.map(r=>r.trial))],[0,1,2]);assert.equal(e.testSnapshots[0].inputs.source_notes,dataset.examples[0].inputs.source_notes);
+ await service.route('POST',`/api/experiments/${e.id}/winner`,{versionId:candidate.id});
+ await assert.rejects(service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[original,candidate.id],datasetId:dataset.id,repeats:4}),/trials/);
+ const run=state.runs[0];run.status='failed';const test=await service.route('POST',`/api/prompts/${prompt.id}/tests`,{sourceRunId:run.id,title:'Captured failure',inputs:run.inputs,expected:'Correct expected response',checks:{contains:'Correct'}});assert.equal(test.sourceRunId,run.id);
+ await assert.rejects(service.route('POST',`/api/prompts/${state.prompts[1].id}/tests`,{sourceRunId:run.id,title:'Wrong prompt',inputs:{source_notes:'x'}}),/Source/);
+});
+
 test('workflow checks isolate winner substitution, propagate branch outputs and flag regressions',async()=>{
  const state=structuredClone(seed),{service,candidate,experiment,prompt,original}=await tested(state),w=state.workflows[0];
  await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});

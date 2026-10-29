@@ -2,6 +2,7 @@ const coreRender=render;
 render=function(){coreRender();renderEnhancements();};
 function workflowCheckHtml(check){return `<details class="box" open><summary>${esc(check.plan.workflow.title)} · ${esc(check.status)}${check.stale?' · STALE — retest':''} · ${time(check.createdAt)}</summary>${check.flags.map(f=>`<p class="${f.kind==='regression'||f.kind==='failure'?'error':'quiet'}">${esc(f.kind)}${f.index===undefined?'':' · step '+(f.index+1)}: ${esc(f.message)}</p>`).join('')}<div class="experiment-pair">${Object.entries(check.branches).map(([branch,result])=>`<section><h3>${branch==='baseline'?'Current active versions':'Proposed winner'} · ${esc(result.status)}</h3><p class="quiet">${result.latencyMs} ms · ${result.costUsd==null?'cost unknown':'estimated $'+result.costUsd.toFixed(6)}</p>${result.steps.map(step=>{const run=data.runs.find(r=>r.id===step.runId);return `<h4>Step ${step.index+1} · ${esc(data.prompts.find(p=>p.id===step.promptId)?.title)} · v${data.versions.find(v=>v.id===step.versionId)?.number}</h4><p class="output">${esc(run?.output || step.error)}</p>${run?runMeta(run):''}<p class="quiet">Rules: ${step.rule?.pass===true?'pass':step.rule?.pass===false?'fail':'unscored'} · JSON fields: ${step.fieldsPass===null?'unscored':step.fieldsPass?'pass':'fail'}</p>`;}).join('')}</section>`).join('')}</div></details>`;}
 function renderEnhancements(){
+ renderDatasetTools();
  if(tab==='experiments'){
   document.querySelectorAll('.experiment-decision').forEach((panel,index)=>{
    const e=data.experiments.find(e=>e.id===panel.dataset.experimentId);if(!e)return;
@@ -17,5 +18,15 @@ function renderEnhancements(){
   bind('save-workflow-quality',()=>{let body;try{body=JSON.parse($('#workflow-quality').value);}catch{status('Enter valid JSON.',true);return;}action(async()=>{await api(`/api/workflows/${w.id}/quality`,body);$('#modal').close();},'Contracts and budgets saved. Retest workflows after changing them.');});
  });
  document.querySelectorAll('[data-check-experiment]').forEach(b=>b.onclick=()=>{const body={workflowId:b.dataset.checkWorkflow,baselineVersionId:p().activeVersionId,input:$('#wf-check-input-'+b.dataset.checkExperiment+'-'+b.dataset.checkWorkflow).value};action(()=>api(`/api/experiments/${b.dataset.checkExperiment}/workflow-check`,body),'Workflow comparison saved. Review regressions, unscored changes and stale checks before activation.');});
+}
+function renderDatasetTools(){
+ if(tab==='experiments'){
+  const control=$('#compare');control.insertAdjacentHTML('beforebegin',`<div class="two"><div><label for="experiment-dataset">Reusable dataset · overrides checked examples</label><select id="experiment-dataset"><option value="">Use checked examples</option>${(data.datasets || []).filter(d=>d.promptId===promptId).map(d=>`<option value="${d.id}">${esc(d.title)} · ${d.examples.length} examples</option>`).join('')}</select></div><div><label for="trial-count">Repeated trials per example</label><select id="trial-count"><option>1</option><option>2</option><option>3</option></select></div></div><p class="quiet">Maximum six example/trial pairs (12 model calls). Repeated outputs are shown separately; rule-pass counts do not establish statistical confidence.</p><button id="save-dataset">Save checked examples as dataset</button>`);
+  bind('save-dataset',()=>{const testIds=[...document.querySelectorAll('[data-test]:checked')].map(el=>el.dataset.test);modal('<h2>Save reusable dataset</h2><label for="dataset-title">Dataset name</label><input id="dataset-title"><button id="confirm-dataset" class="primary">Save dataset</button>');bind('confirm-dataset',()=>{const title=$('#dataset-title').value;action(async()=>{await api('/api/datasets',{promptId,title,testIds});$('#modal').close();},'Dataset saved as an independent snapshot of these examples.');});});
+ }
+ if(tab==='history'){
+  const runs=data.runs.filter(r=>r.promptId===promptId).slice().reverse();document.querySelectorAll('#content .columns > section:last-child > details.box').forEach((el,i)=>{const run=runs[i];if(run)el.insertAdjacentHTML('beforeend',`<button data-capture-run="${run.id}">${run.status==='failed'?'Capture failure as regression test':'Save response as regression test'}</button>`);});
+  document.querySelectorAll('[data-capture-run]').forEach(b=>b.onclick=()=>{const run=data.runs.find(r=>r.id===b.dataset.captureRun);testModal(run.inputs,run.status==='complete'?run.output:'',run.id);});
+ }
 }
 
