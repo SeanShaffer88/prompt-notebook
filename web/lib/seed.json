@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "prompts": [
+    {
+      "id": "fb018eaa-7f93-4275-ab7e-f660691f0268",
+      "title": "Research brief",
+      "activeVersionId": "25001b77-7db2-4f73-9ba7-bee5795b5a2b",
+      "createdAt": "2026-10-29T05:49:07.854Z"
+    },
+    {
+      "id": "0f70c1f4-4e52-4666-a4b5-fc30177976d9",
+      "title": "Decision memo",
+      "activeVersionId": "2f6786ec-2b5c-4f3e-b0ce-bf1818239c21",
+      "createdAt": "2026-10-29T05:49:07.854Z"
+    },
+    {
+      "id": "b6ed7291-4dfc-4ed3-8b92-08c5a6dbf2cc",
+      "title": "Writing editor",
+      "activeVersionId": "d35ed74a-0243-4e21-96e5-7e97e742e537",
+      "createdAt": "2026-10-29T05:49:07.854Z"
+    }
+  ],
+  "versions": [
+    {
+      "id": "25001b77-7db2-4f73-9ba7-bee5795b5a2b",
+      "promptId": "fb018eaa-7f93-4275-ab7e-f660691f0268",
+      "number": 1,
+      "template": "Write a concise research brief from these source notes. Separate measured findings from assumptions, state missing evidence, and recommend a next step. Keep it under 120 words.\n\n{{source_notes}}",
+      "note": "First version",
+      "model": "",
+      "maxTokens": 1000,
+      "createdAt": "2026-10-29T05:49:07.854Z"
+    },
+    {
+      "id": "2f6786ec-2b5c-4f3e-b0ce-bf1818239c21",
+      "promptId": "0f70c1f4-4e52-4666-a4b5-fc30177976d9",
+      "number": 1,
+      "template": "Using only the supplied brief, write a decision memo with a recommendation, uncertainty, and one next action. Do not add unsupported facts.\n\n{{brief}}",
+      "note": "First version",
+      "model": "",
+      "maxTokens": 1000,
+      "createdAt": "2026-10-29T05:49:07.854Z"
+    },
+    {
+      "id": "d35ed74a-0243-4e21-96e5-7e97e742e537",
+      "promptId": "b6ed7291-4dfc-4ed3-8b92-08c5a6dbf2cc",
+      "number": 1,
+      "template": "Edit the following text for clarity and concision, retaining its meaning and factual qualifications. Return only the edited text.\n\n{{draft}}",
+      "note": "First version",
+      "model": "",
+      "maxTokens": 1000,
+      "createdAt": "2026-10-29T05:49:07.854Z"
+    }
+  ],
+  "runs": [],
+  "corrections": [],
+  "tests": [],
+  "experiments": [],
+  "workflows": [
+    {
+      "id": "b965fe74-69d7-4030-bf88-f56759924e63",
+      "title": "Research → decision",
+      "promptIds": [
+        "fb018eaa-7f93-4275-ab7e-f660691f0268",
+        "0f70c1f4-4e52-4666-a4b5-fc30177976d9"
+      ],
+      "createdAt": "2026-10-29T05:49:07.854Z"
+    }
+  ],
+  "workflowRuns": []
+}
