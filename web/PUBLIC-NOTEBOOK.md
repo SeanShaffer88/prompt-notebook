@@ -30,3 +30,15 @@ After rating a response and choosing a winner, use Suggest improved prompt with 
 
 ### Activate experiment winners and roll back
 Completed experiments allow a human to pick either tested version as winner, then activate it separately. Activation records the actual previously active version and offers one-click rollback while that activation remains current. All versions, runs and results are retained. History also offers Make version active for any saved version. Stale active-version changes and incomplete test runs are rejected. Sample outputs cannot establish quality; review real responses before promoting. Activations affect future workflow runs and existing workflow staleness indicators.
+
+### Slice 1: workflow quality checks
+Test each affected workflow before promotion using the current active version and proposed experiment winner, without activating either. All step versions and model defaults are pinned. Step contracts support text rules, JSON validity and required top-level fields. Per-step user-supplied token prices enable estimated cost budgets; latency budgets use summed model-call latency. Missing prices remain unknown. Changed outputs require human review; previously passing rules or budgets that fail are regressions. Sample results cannot establish quality. Checks become stale after relevant version, model default, winner or contract changes. Experiment summaries show rule results and missing workflow coverage.
+
+### Slice 2: reusable evaluations
+Save 1–3 checked examples as a named dataset snapshot. Experiments can use that dataset and repeat each example 1–3 times, up to six example/trial pairs. Every trial is retained and shown independently. History offers capture of failed or successful responses as regression examples with optional expected output and rule checks; source run provenance is preserved.
+
+### Slice 3: human review
+Score completed responses on accuracy, clarity, completeness and tone, with optional notes. Reviews persist and are included in subsequent comparison-based prompt suggestions. Blind model and version review stores a randomized order and masks identity labels in the comparison view; outputs may identify themselves, and exports retain provenance. Reveal version identities before activation. Experiments show a baseline-to-candidate instruction diff; unchanged prefix/suffix context is retained around the changed block.
+
+### Slice 4: portable bundles
+History & export can download a versioned bundle and preview an import. Bundles include prompts, versions, workflows, run history, datasets, reviews and evaluation results; connection settings and keys are excluded. Imports validate schema, sizes and graph references, assign new IDs, retain existing work, and mark imported workflow checks stale. Public imports are limited to 110 KB. Importing does not execute AI calls or connect keys.

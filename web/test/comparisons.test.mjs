@@ -9,6 +9,52 @@ async function reviewed(state){const service=notebookService(state),prompt=state
 
 async function tested(state){const {service,c,prompt}=await reviewed(state);const suggestion=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{});const candidate=await service.route('POST',`/api/improvements/${suggestion.id}/candidate`,{template:suggestion.template});const experiment=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[c.versionId,candidate.id],testIds:[candidate.comparisonSource.testId]});return {service,prompt,candidate,experiment:state.experiments.find(e=>e.id===experiment.id),original:c.versionId};}
 
+test('portable bundles preserve evaluation graphs with new IDs and reject invalid imports atomically',async()=>{
+ const state=structuredClone(seed),{service,experiment,candidate,prompt,original}=await tested(state);await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});await service.route('POST',`/api/experiments/${experiment.id}/workflow-check`,{workflowId:state.workflows[0].id,baselineVersionId:original,input:'notes'});
+ const bundle=await service.route('POST','/api/bundle/export',{});assert.ok(!bundle.data.settings);const preview=await service.route('POST','/api/bundle/preview',{bundle});assert.equal(preview.counts.prompts,3);assert.equal(state.prompts.length,3);
+ const imported=await service.route('POST','/api/bundle/import',{bundle});assert.equal(state.prompts.length,6);assert.ok(!imported.promptIds.includes(prompt.id));const newPrompt=state.prompts.find(p=>p.id===imported.promptIds[0]);assert.equal(state.versions.find(v=>v.id===newPrompt.activeVersionId).promptId,newPrompt.id);assert.equal(prompt.activeVersionId,original);
+ const reopened=await notebookService(state).route('GET','/api/state');assert.equal(reopened.workflowChecks[1].stale,true);
+ const before=JSON.stringify(state);for(const mutate of [b=>b.data.versions[0].promptId='missing',b=>b.data.prompts.push(b.data.prompts[0]),b=>b.data.experiments[0].repeats=1000000,b=>b.data.prompts[0].credentials='secret',b=>b.schemaVersion=99]){const bad=structuredClone(bundle);mutate(bad);await assert.rejects(service.route('POST','/api/bundle/import',{bundle:bad}));assert.equal(JSON.stringify(state),before);}
+});
+
+test('rubric reviews persist, feed improvement evidence and blind identities must be revealed for activation',async()=>{
+ const state=structuredClone(seed),{service,c,prompt}=await reviewed(state),runId=c.results[0].runId;
+ const scores={accuracy:5,clarity:4,completeness:null,tone:3};await service.route('POST','/api/run-reviews',{runId,scores,notes:'Clear but terse'});await service.route('POST','/api/run-reviews',{runId,scores,notes:'Updated'});assert.equal(state.runReviews.length,1);
+ const suggestion=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{});assert.equal(suggestion.evidence[0].rubric.scores.clarity,4);
+ await service.route('POST',`/api/comparisons/${c.id}/blind`,{enabled:true});const order=[...c.blind.order];await service.route('POST',`/api/comparisons/${c.id}/blind`,{enabled:false});await service.route('POST',`/api/comparisons/${c.id}/blind`,{enabled:true});assert.deepEqual(c.blind.order,order);
+ await assert.rejects(service.route('POST','/api/run-reviews',{runId,scores:{...scores,accuracy:6}}));
+ const candidate=await service.route('POST',`/api/improvements/${suggestion.id}/candidate`,{template:suggestion.template}),e=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[prompt.activeVersionId,candidate.id],testIds:[candidate.comparisonSource.testId]});
+ await service.route('POST',`/api/experiments/${e.id}/winner`,{versionId:candidate.id});await service.route('POST',`/api/experiments/${e.id}/blind`,{enabled:true});await assert.rejects(service.route('POST',`/api/experiments/${e.id}/activate`,{winnerVersionId:candidate.id,expectedActiveVersionId:prompt.activeVersionId}),/Reveal/);
+});
+
+test('datasets snapshot examples and repeated trials preserve every output and rule result',async()=>{
+ const state=structuredClone(seed),{service,prompt,candidate,original}=await tested(state);const example=state.tests[0];const dataset=await service.route('POST','/api/datasets',{promptId:prompt.id,title:'Reusable evidence cases',testIds:[example.id]});example.inputs.source_notes='Changed later';assert.notEqual(dataset.examples[0].inputs.source_notes,example.inputs.source_notes);
+ const e=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[original,candidate.id],datasetId:dataset.id,repeats:3});assert.equal(e.results.length,6);assert.deepEqual([...new Set(e.results.map(r=>r.trial))],[0,1,2]);assert.equal(e.testSnapshots[0].inputs.source_notes,dataset.examples[0].inputs.source_notes);
+ await service.route('POST',`/api/experiments/${e.id}/winner`,{versionId:candidate.id});
+ await assert.rejects(service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[original,candidate.id],datasetId:dataset.id,repeats:4}),/trials/);
+ const run=state.runs[0];run.status='failed';const test=await service.route('POST',`/api/prompts/${prompt.id}/tests`,{sourceRunId:run.id,title:'Captured failure',inputs:run.inputs,expected:'Correct expected response',checks:{contains:'Correct'}});assert.equal(test.sourceRunId,run.id);
+ await assert.rejects(service.route('POST',`/api/prompts/${state.prompts[1].id}/tests`,{sourceRunId:run.id,title:'Wrong prompt',inputs:{source_notes:'x'}}),/Source/);
+});
+
+test('workflow checks isolate winner substitution, propagate branch outputs and flag regressions',async()=>{
+ const state=structuredClone(seed),{service,candidate,experiment,prompt,original}=await tested(state),w=state.workflows[0];
+ await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});
+ for(const v of state.versions){v.provider='openai';v.model='gpt-4.1-mini';}
+ candidate.template='CANDIDATE {{source_notes}}';
+ await service.route('POST',`/api/workflows/${w.id}/quality`,{contracts:w.promptIds.map(()=>({checks:{contains:'GOOD'},requiredFields:[],inputPerMillion:1,outputPerMillion:2})),maxLatencyMs:10000,maxCostUsd:1});
+ const previous=globalThis.fetch,requests=[];globalThis.fetch=async(url,init)=>{const request=JSON.parse(init.body);requests.push(request);return output(request.input.includes('CANDIDATE')||request.input.includes('BAD')?'BAD':'GOOD');};
+ try{const result=await notebookService(state,{openai:'test-key'}).route('POST',`/api/experiments/${experiment.id}/workflow-check`,{workflowId:w.id,baselineVersionId:original,input:'notes'});assert.equal(result.status,'regression');assert.ok(result.flags.some(f=>f.kind==='regression'&&f.index===1));assert.equal(result.branches.candidate.steps[0].versionId,candidate.id);assert.equal(result.branches.baseline.steps[0].versionId,original);assert.ok(requests.some(r=>r.input.includes('BAD')&&!r.input.includes('CANDIDATE')));assert.equal(prompt.activeVersionId,original);assert.ok(result.branches.candidate.costUsd>0);
+ const fresh=await notebookService(state).route('GET','/api/state');assert.equal(fresh.workflowChecks[0].stale,false);state.prompts[1].activeVersionId='missing';assert.equal((await notebookService(state).route('GET','/api/state')).workflowChecks[0].stale,true);
+ }finally{globalThis.fetch=previous;}
+});
+
+test('workflow key preflight happens before calls and sample checks never claim a quality pass',async()=>{
+ const state=structuredClone(seed),{service,candidate,experiment,original}=await tested(state),w=state.workflows[0];await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});
+ await assert.rejects(notebookService(state,{openai:'test-key'}).route('POST',`/api/experiments/${experiment.id}/workflow-check`,{workflowId:w.id,baselineVersionId:original,input:'notes'}),/key/);assert.equal(state.workflowChecks.length,0);
+ const result=await service.route('POST',`/api/experiments/${experiment.id}/workflow-check`,{workflowId:w.id,baselineVersionId:original,input:'notes'});assert.equal(result.status,'sample');assert.equal(result.branches.baseline.steps.length,2);assert.ok(result.flags.some(f=>f.kind==='sample'));
+ await assert.rejects(service.route('POST',`/api/experiments/${experiment.id}/workflow-check`,{workflowId:w.id,baselineVersionId:'stale',input:'notes'}),/changed/);
+});
+
 test('experiment winner activation and rollback persist without modifying saved versions or runs',async()=>{
  const state=structuredClone(seed),{service,prompt,candidate,experiment,original}=await tested(state),versions=structuredClone(state.versions),runs=structuredClone(state.runs);
  const route=(action,body)=>service.route('POST',`/api/experiments/${experiment.id}/${action}`,body);
