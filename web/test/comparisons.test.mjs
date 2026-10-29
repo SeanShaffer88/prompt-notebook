@@ -5,6 +5,36 @@ import {notebookService} from '../lib/notebook-service.mjs';
 const targets=[{provider:'openai',model:'gpt-4.1-mini'},{provider:'openai',model:'gpt-4.1'}];
 const output=text=>({ok:true,json:async()=>({status:'completed',output:[{type:'message',content:[{type:'output_text',text}]}],usage:{input_tokens:5,output_tokens:7}})});
 
+async function reviewed(state){const service=notebookService(state),prompt=state.prompts[0];const c=await service.route('POST','/api/comparisons',{promptId:prompt.id,inputs:{source_notes:'review notes'},targets});await service.route('POST',`/api/comparisons/${c.id}/rate`,{runId:c.results[0].runId,rating:5});await service.route('POST',`/api/comparisons/${c.id}/winner`,{runId:c.results[0].runId});return {service,c,prompt};}
+
+test('review improvement preserves evidence, creates a candidate and tests the exact original',async()=>{
+ const state=structuredClone(seed),{service,c,prompt}=await reviewed(state),base=state.versions.find(v=>v.id===c.versionId);
+ const improvement=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{feedback:'Prefer explicit uncertainty'});
+ assert.equal(improvement.evidence[0].rating,5);assert.equal(improvement.evidence[0].winner,true);assert.equal(improvement.simulated,true);assert.equal(state.versions.length,seed.versions.length);
+ await service.route('POST',`/api/comparisons/${c.id}/rate`,{runId:c.results[0].runId,rating:1});assert.equal(improvement.evidence[0].rating,5);
+ const candidate=await service.route('POST',`/api/improvements/${improvement.id}/candidate`,{template:improvement.template});assert.equal(candidate.comparisonSource.versionId,base.id);assert.equal(candidate.provider,base.provider);assert.equal(candidate.maxTokens,base.maxTokens);
+ assert.equal((await service.route('POST',`/api/improvements/${improvement.id}/candidate`,{template:improvement.template})).id,candidate.id);assert.equal(state.tests.length,seed.tests.length+1);
+ const experiment=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[base.id,candidate.id],testIds:[candidate.comparisonSource.testId]});assert.equal(experiment.status,'complete');assert.equal(experiment.results.length,2);assert.ok(experiment.results.every(r=>r.pass===null));
+ const runs=experiment.results.map(r=>state.runs.find(run=>run.id===r.runId));assert.deepEqual(runs[0].inputs,runs[1].inputs);assert.equal(runs[0].provider,runs[1].provider);assert.equal(runs[0].requestedModel,runs[1].requestedModel);assert.equal(runs[0].maxTokens,runs[1].maxTokens);assert.notEqual(runs[0].rendered,runs[1].rendered);assert.equal(prompt.activeVersionId,base.id);
+ const reopened=await notebookService(structuredClone(state)).route('GET','/api/state');assert.equal(reopened.promptImprovements[0].id,improvement.id);
+});
+
+test('live suggestion includes winner and all ratings and validates placeholders before saving',async()=>{
+ const state=structuredClone(seed),{c}=await reviewed(state),base=state.versions.find(v=>v.id===c.versionId);base.provider='openai';base.model='gpt-4.1-mini';
+ const previous=globalThis.fetch,requests=[];globalThis.fetch=async(url,init)=>{requests.push(JSON.parse(init.body));return output(base.template+'\nPrefer concise, qualified claims.');};
+ try{const service=notebookService(state,{openai:'test-key'}),suggestion=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{feedback:'Keep caveats'});const evidence=JSON.parse(requests[0].input.split('\n\n').slice(1).join('\n\n'));assert.equal(evidence.responses[0].rating,5);assert.equal(evidence.responses[0].winner,true);assert.equal(evidence.responses.length,2);assert.equal(evidence.feedback,'Keep caveats');assert.ok(!JSON.stringify(state).includes('test-key'));
+ const candidate=await service.route('POST',`/api/improvements/${suggestion.id}/candidate`,{template:suggestion.template});state.settings={provider:'gemini',models:{openai:'different-default'}};
+ await service.route('POST','/api/experiments',{promptId:c.promptId,versionIds:[base.id,candidate.id],testIds:[candidate.comparisonSource.testId]});assert.equal(requests[1].model,requests[2].model);assert.equal(requests[1].max_output_tokens,requests[2].max_output_tokens);
+ globalThis.fetch=async()=>output('No variables left');await assert.rejects(service.route('POST',`/api/comparisons/${c.id}/suggest`,{}),/variables/);assert.equal(state.promptImprovements.length,1);
+ await assert.rejects(service.route('POST',`/api/improvements/${suggestion.id}/candidate`,{template:'Changed {{wrong}}'}),/variables/);
+ }finally{globalThis.fetch=previous;}
+});
+
+test('suggestions require a winner, ratings and the source provider key before billable calls',async()=>{
+ const state=structuredClone(seed),{service,c}=await reviewed(state),previous=globalThis.fetch;let calls=0;globalThis.fetch=async()=>{calls++;throw Error('Unexpected');};
+ try{await assert.rejects(notebookService(state,{openai:'test-key'}).route('POST',`/api/comparisons/${c.id}/suggest`,{}),/key/);c.results[0].rating=null;await assert.rejects(service.route('POST',`/api/comparisons/${c.id}/suggest`,{}),/Rate/);c.winnerRunId=null;await assert.rejects(service.route('POST',`/api/comparisons/${c.id}/suggest`,{}),/winner/);assert.equal(calls,0);assert.equal(state.promptImprovements.length,0);}finally{globalThis.fetch=previous;}
+});
+
 test('ratings, winner and saved response persist independently with immutable source snapshots',async()=>{
  const state=structuredClone(seed),service=notebookService(state),prompt=state.prompts[0];
  const c=await service.route('POST','/api/comparisons',{promptId:prompt.id,inputs:{source_notes:'review notes'},targets});
