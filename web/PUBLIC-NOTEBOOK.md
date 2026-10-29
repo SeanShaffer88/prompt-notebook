@@ -21,3 +21,6 @@ Production requires no operator model key or connection to the owner's computer.
 ## Validation
 
 Service tests cover the sample correction/experiment/workflow loop, all three API request/response contracts, fixed destinations, blocked/empty responses, provider failure handling, key routing in mixed-provider workflows, legacy version compatibility, secret exclusion, and independent visitor state. HTTP checks against the built local Worker exercise separate cookie sessions, data persistence, stale workflow detection/retest, exports and cross-origin rejection. Successful paid-provider calls require visitor credentials; adapter tests use deterministic provider responses.
+
+### Review model comparisons
+Rate each completed response from 1–5, pick one winner, and save that winner into the notebook. Ratings and winner choices persist. Saved best responses retain the exact output, prompt/input snapshot, model, sample label, and rating at save time. Changing a winner leaves earlier saved responses intact; repeated saves of the same response are deduplicated. Prompt exports include reviews and saved responses. Failed responses cannot be rated or selected.

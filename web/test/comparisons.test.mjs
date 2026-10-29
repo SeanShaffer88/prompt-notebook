@@ -4,6 +4,30 @@ import seed from '../lib/seed.json' with {type:'json'};
 import {notebookService} from '../lib/notebook-service.mjs';
 const targets=[{provider:'openai',model:'gpt-4.1-mini'},{provider:'openai',model:'gpt-4.1'}];
 const output=text=>({ok:true,json:async()=>({status:'completed',output:[{type:'message',content:[{type:'output_text',text}]}],usage:{input_tokens:5,output_tokens:7}})});
+
+test('ratings, winner and saved response persist independently with immutable source snapshots',async()=>{
+ const state=structuredClone(seed),service=notebookService(state),prompt=state.prompts[0];
+ const c=await service.route('POST','/api/comparisons',{promptId:prompt.id,inputs:{source_notes:'review notes'},targets});
+ const [a,b]=c.results.map(r=>r.runId),route=(action,body)=>service.route('POST',`/api/comparisons/${c.id}/${action}`,body);
+ await route('rate',{runId:a,rating:5});await route('rate',{runId:b,rating:3});await route('winner',{runId:a});
+ const saved=await route('save',{});assert.equal(saved.output,state.runs.find(r=>r.id===a).output);assert.equal(saved.rating,5);assert.equal(saved.model,targets[0].model);assert.equal(saved.simulated,true);assert.deepEqual(saved.inputs,{source_notes:'review notes'});
+ assert.equal((await route('save',{})).id,saved.id);assert.equal(state.savedResponses.length,1);
+ await route('rate',{runId:a,rating:1});await route('winner',{runId:b});assert.equal(saved.rating,5);assert.equal(saved.sourceRunId,a);
+ const second=await route('save',{});assert.equal(second.sourceRunId,b);assert.equal(state.savedResponses.length,2);
+ await route('rate',{runId:a,rating:null});await route('winner',{runId:null});assert.equal(c.results[0].rating,null);assert.equal(c.winnerRunId,null);
+ const reopened=await notebookService(structuredClone(state)).route('GET','/api/state');assert.equal(reopened.savedResponses.length,2);assert.equal(reopened.comparisons[0].results[1].rating,3);
+ assert.equal(prompt.activeVersionId,seed.prompts[0].activeVersionId);assert.equal(state.versions.length,seed.versions.length);
+});
+
+test('reviews reject invalid ratings, foreign runs, failed runs and saving without a winner',async()=>{
+ const state=structuredClone(seed),service=notebookService(state),body={promptId:state.prompts[0].id,inputs:{source_notes:'notes'},targets};
+ const c=await service.route('POST','/api/comparisons',body),other=await service.route('POST','/api/comparisons',body);
+ const route=(action,body)=>service.route('POST',`/api/comparisons/${c.id}/${action}`,body),a=c.results[0].runId;
+ for(const rating of [0,6,1.5,'5',undefined])await assert.rejects(route('rate',{runId:a,rating}));
+ await assert.rejects(route('save',{}));await assert.rejects(route('winner',{runId:other.results[0].runId}));
+ state.runs.find(r=>r.id===a).status='failed';await assert.rejects(route('winner',{runId:a}));await assert.rejects(route('rate',{runId:a,rating:5}));
+ await assert.rejects(service.route('POST','/api/comparisons/missing/winner',{runId:a}));assert.equal(state.savedResponses.length,0);
+});
 test('same prompt fans out concurrently and records immutable, ordered model results',{timeout:2000},async()=>{
  const state=structuredClone(seed),p=state.prompts[0],source=structuredClone(state.versions[0]),originalFetch=globalThis.fetch,requests=[],waiting=[];
  globalThis.fetch=(url,init)=>new Promise(resolve=>{requests.push({url,...init});waiting.push(resolve);if(waiting.length===2){waiting[1](output('Second model'));waiting[0](output('First model'));}});

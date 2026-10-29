@@ -3,6 +3,7 @@ import { callModel, PROVIDERS, providerInfo, normalizeKeys, validateModelId } fr
 export function notebookService(state, credentials='') {
   const store={read:()=>structuredClone(state),mutate:fn=>fn(state)};
   state.comparisons ||= [];
+  state.savedResponses ||= [];
   const keys=normalizeKeys(typeof credentials==='string'?{anthropic:credentials}:credentials);
   let selected=providerInfo(state.settings?.provider || 'anthropic');
   // Existing hosted versions predate provider selection and were Anthropic versions.
@@ -60,6 +61,25 @@ export function notebookService(state, credentials='') {
       settled.forEach((result,index)=>{if(result.status==='rejected')Object.assign(comparison.results[index],{status:'failed',error:'This model could not complete.'});});
       const failed=comparison.results.filter(r=>r.status==='failed').length;
       comparison.status=failed===targets.length?'failed':failed?'partial':'complete';comparison.finishedAt=now();return comparison;
+    }
+    const review=path.match(/^\/api\/comparisons\/([^/]+)\/(rate|winner|save)$/);
+    if(method==='POST' && review){
+      const [,comparisonId,action]=review,comparison=state.comparisons.find(c=>c.id===comparisonId);
+      requireValue(comparison,'Comparison not found.',404);
+      if(action==='winner' && body.runId===null){comparison.winnerRunId=null;comparison.reviewedAt=now();return comparison;}
+      const runId=action==='save'?comparison.winnerRunId:body.runId;
+      const result=comparison.results.find(r=>r.runId===runId && r.status==='complete');
+      const run=state.runs.find(r=>r.id===runId && r.comparisonId===comparison.id && r.promptId===comparison.promptId && r.status==='complete');
+      requireValue(result && run,'Choose a completed response from this comparison.',422);
+      if(action==='rate'){
+        requireValue(body.rating===null || (Number.isInteger(body.rating) && body.rating>=1 && body.rating<=5),'Rating must be 1–5, or null to clear.');
+        result.rating=body.rating;comparison.reviewedAt=now();return comparison;
+      }
+      if(action==='winner'){comparison.winnerRunId=run.id;comparison.reviewedAt=now();return comparison;}
+      const existing=state.savedResponses.find(r=>r.comparisonId===comparison.id && r.sourceRunId===run.id);
+      if(existing)return existing;
+      const saved={id:id(),promptId:comparison.promptId,versionId:comparison.versionId,comparisonId:comparison.id,sourceRunId:run.id,provider:result.provider,model:result.model,output:run.output,inputs:structuredClone(run.inputs),rendered:run.rendered,simulated:Boolean(run.simulated),usage:structuredClone(run.usage || {}),latencyMs:run.latencyMs,rating:result.rating ?? null,createdAt:now()};
+      state.savedResponses.push(saved);return saved;
     }
     if(method==='POST' && path==='/api/settings') {
       const chosen=providerInfo(body.provider || selected.id),model=text(body.model,'Model ID',200);
