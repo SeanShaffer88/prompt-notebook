@@ -7,7 +7,7 @@ export function workflowPlan(state,experiment,workflow,defaultModel){
  return {workflow:structuredClone(workflow),versions,winner:{...winner,provider:winner.provider || 'anthropic',model:winner.model || defaultModel(winner.provider || 'anthropic')}};
 }
 export function enhancementState(state,defaultModel){return (state.workflowChecks || []).map(check=>{
- try{const e=state.experiments.find(e=>e.id===check.experimentId),w=state.workflows.find(w=>w.id===check.workflowId);return {...check,stale:JSON.stringify(workflowPlan(state,e,w,defaultModel))!==check.signature};}catch{return {...check,stale:true};}
+ try{const e=state.experiments.find(e=>e.id===check.experimentId),w=state.workflows.find(w=>w.id===check.workflowId);const expired=w.quality?.maxAgeHours!=null&&Date.now()-Date.parse(check.finishedAt || check.createdAt)>w.quality.maxAgeHours*3600000;return {...check,expired:Boolean(expired),stale:Boolean(expired)||JSON.stringify(workflowPlan(state,e,w,defaultModel))!==check.signature};}catch{return {...check,stale:true};}
 });}
 export function activationGate(state,promptId,versionId,defaultModel){
  const prompt=state.prompts.find(p=>p.id===promptId);if(prompt?.activeVersionId===versionId)return {blocked:false,checks:[]};
@@ -20,6 +20,7 @@ export function activationGate(state,promptId,versionId,defaultModel){
   else if(check.status==='regression'||check.flags.some(f=>f.kind==='regression'||f.kind==='failure'))problem='regression';
   else if(check.status==='running'||check.branches.baseline.status!=='complete'||check.branches.candidate.status!=='complete')problem='incomplete';
   else if(check.flags.some(f=>f.kind==='sample'||f.kind==='inconclusive')||check.branches.baseline.simulated||check.branches.candidate.simulated)problem='unverified';
+  else if(check.review?.decision==='reject'||check.flags.some(f=>f.kind==='review')&&check.review?.decision!=='accept')problem='human-review';
   return {workflowId:w.id,title:w.title,checkId:check?.id || null,problem};
  });return {blocked:items.some(c=>c.problem),checks:items};
 }
@@ -27,7 +28,35 @@ export function enhancementService(state,{execute,preflight,defaultModel}){
  state.workflowChecks ||= [];
  state.datasets ||= [];
  state.runReviews ||= [];
+ state.workflowBatches ||= [];
  async function route(method,path,body){
+  const freshness=path.match(/^\/api\/workflows\/([^/]+)\/check-age$/);
+  if(method==='POST'&&freshness){const w=state.workflows.find(w=>w.id===freshness[1]);requireValue(w,'Workflow not found.',404);const maxAgeHours=numeric(body.maxAgeHours,'maximum check age',720);requireValue(maxAgeHours===null||maxAgeHours>0,'Check age must be positive.');w.quality ||= {contracts:w.promptIds.map(()=>({checks:cleanChecks(),requiredFields:[],inputPerMillion:null,outputPerMillion:null})),maxCostUsd:null,maxLatencyMs:null};w.quality.maxAgeHours=maxAgeHours;return w;}
+  const savedInput=path.match(/^\/api\/workflows\/([^/]+)\/test-input$/);
+  if(method==='POST'&&savedInput){const w=state.workflows.find(w=>w.id===savedInput[1]);requireValue(w,'Workflow not found.',404);w.testInput=text(body.input,'Reusable workflow input',30000);return w;}
+  const reviewCheck=path.match(/^\/api\/workflow-checks\/([^/]+)\/review$/);
+  if(method==='POST'&&reviewCheck){const c=state.workflowChecks.find(c=>c.id===reviewCheck[1]);requireValue(c&&c.status!=='running','Finished workflow check not found.',404);requireValue(['accept','reject','note'].includes(body.decision),'Choose a review decision.');const review={decision:body.decision,notes:text(body.notes,'Review note',3000),createdAt:now()};c.reviewHistory ||= [];c.reviewHistory.push(review);c.review=review;return c;}
+  const start=path.match(/^\/api\/experiments\/([^/]+)\/workflow-batch$/);
+  if(method==='POST'&&start){
+   const e=state.experiments.find(e=>e.id===start[1]);requireValue(e?.status==='complete'&&e.versionIds.includes(e.winnerVersionId),'Choose a winner from a completed experiment.',422);
+   requireValue(!state.workflowBatches.some(b=>b.experimentId===e.id&&b.status==='running'),'Resume or cancel the existing workflow batch before starting another.',409);
+   const p=state.prompts.find(p=>p.id===e.promptId);requireValue(body.baselineVersionId===p.activeVersionId,'Active version changed. Refresh before starting.',409);requireValue(e.winnerVersionId!==p.activeVersionId,'Winner is already active.');
+   const mode=body.mode || 'missing-stale';requireValue(['missing-stale','retry','all'].includes(mode),'Invalid batch mode.');
+   const gate=activationGate(state,e.promptId,e.winnerVersionId,defaultModel),selected=gate.checks.filter(c=>mode==='all'||(mode==='retry'?['regression','incomplete','unverified','human-review'].includes(c.problem):['missing','stale'].includes(c.problem)));
+   const items=selected.map(c=>{const w=state.workflows.find(w=>w.id===c.workflowId),latest=state.workflowChecks.slice().reverse().find(check=>check.workflowId===w.id&&check.winnerVersionId===e.winnerVersionId);const input=text(body.inputs?.[w.id] || w.testInput || latest?.input || state.workflowRuns.slice().reverse().find(r=>r.workflowId===w.id)?.input,'Input for '+w.title,30000);const plan=workflowPlan(state,e,w,defaultModel);const versions=[...plan.versions,plan.winner];versions.forEach(v=>requireValue(variables(v.template).length===1,'Every workflow step needs one input variable.'));preflight(versions);return {workflowId:w.id,title:w.title,input,signature:JSON.stringify(plan),status:'queued'};});
+   requireValue(JSON.stringify(state).length+JSON.stringify(items).length+5000<=700000,'Batch plan exceeds workspace storage.',413);
+   const batch={id:id(),experimentId:e.id,promptId:e.promptId,winnerVersionId:e.winnerVersionId,baselineVersionId:p.activeVersionId,mode,items,status:items.length?'running':'complete',createdAt:now()};state.workflowBatches.push(batch);return batch;
+  }
+  const batchAction=path.match(/^\/api\/workflow-batches\/([^/]+)\/(next|cancel)$/);
+  if(method==='POST'&&batchAction){const batch=state.workflowBatches.find(b=>b.id===batchAction[1]);requireValue(batch,'Batch not found.',404);
+   if(batchAction[2]==='cancel'){if(batch.status==='running'){batch.status='cancelled';batch.finishedAt=now();for(const item of batch.items)if(item.status==='queued')item.status='cancelled';}return batch;}
+   requireValue(batch.status==='running','This batch is no longer running.',409);const item=batch.items.find(i=>i.status==='queued');if(!item){batch.status='complete';batch.finishedAt=now();return batch;}
+   requireValue(body.expectedWorkflowId===item.workflowId,'Batch progress changed. Refresh before continuing.',409);
+   const e=state.experiments.find(e=>e.id===batch.experimentId),w=state.workflows.find(w=>w.id===item.workflowId);
+   if(!e||e.winnerVersionId!==batch.winnerVersionId||state.prompts.find(p=>p.id===batch.promptId)?.activeVersionId!==batch.baselineVersionId||!w||JSON.stringify(workflowPlan(state,e,w,defaultModel))!==item.signature){batch.status='stale';batch.finishedAt=now();item.status='stale';item.error='Workflow settings, winner or active version changed. Start a new batch.';return batch;}
+   item.status='running';try{const check=await route('POST',`/api/experiments/${e.id}/workflow-check`,{workflowId:w.id,baselineVersionId:batch.baselineVersionId,input:item.input});item.checkId=check.id;item.status='complete';item.result=check.status;}catch(error){item.status='failed';item.error=error.message;}
+   if(!batch.items.some(i=>i.status==='queued')){batch.status='complete';batch.finishedAt=now();}return batch;
+  }
   if(method==='POST'&&path==='/api/run-reviews'){
    const run=state.runs.find(r=>r.id===body.runId&&r.status==='complete');requireValue(run,'Completed response not found.',404);
    const scores={};for(const key of ['accuracy','clarity','completeness','tone']){const score=body.scores?.[key];requireValue(score===null || Number.isInteger(score)&&score>=1&&score<=5,'Rubric scores must be 1–5 or null.');scores[key]=score;}
@@ -47,7 +76,7 @@ export function enhancementService(state,{execute,preflight,defaultModel}){
    const w=state.workflows.find(w=>w.id===quality[1]);requireValue(w,'Workflow not found.',404);
    requireValue(Array.isArray(body.contracts)&&body.contracts.length===w.promptIds.length,'Provide one contract per workflow step.');
    const contracts=body.contracts.map(c=>{requireValue(c&&typeof c==='object','Invalid contract.');const requiredFields=c.requiredFields || [];requireValue(Array.isArray(requiredFields)&&requiredFields.length<=30&&requiredFields.every(k=>typeof k==='string'&&k.length>0&&k.length<=100),'Required fields must be top-level JSON field names.');return {checks:cleanChecks(c.checks),requiredFields,inputPerMillion:numeric(c.inputPerMillion,'input price'),outputPerMillion:numeric(c.outputPerMillion,'output price')};});
-   w.quality={contracts,maxLatencyMs:numeric(body.maxLatencyMs,'latency budget'),maxCostUsd:numeric(body.maxCostUsd,'cost budget')};return w;
+   const maxAgeHours=numeric(body.maxAgeHours,'check age',720);requireValue(maxAgeHours===null||maxAgeHours>0,'Check age must be positive.');w.quality={contracts,maxLatencyMs:numeric(body.maxLatencyMs,'latency budget'),maxCostUsd:numeric(body.maxCostUsd,'cost budget'),maxAgeHours};return w;
   }
   const trial=path.match(/^\/api\/experiments\/([^/]+)\/workflow-check$/);
   if(method==='POST'&&trial){
@@ -57,7 +86,7 @@ export function enhancementService(state,{execute,preflight,defaultModel}){
    const plan=workflowPlan(state,e,w,defaultModel),candidateVersions=plan.versions.map(v=>v.promptId===e.promptId?plan.winner:v);
    [...plan.versions,...candidateVersions].forEach(v=>requireValue(variables(v.template).length===1,'Each tested workflow step must have one input variable.'));
    preflight([...plan.versions,...candidateVersions]);const input=text(body.input,'Workflow input',30000);
-   const estimate=JSON.stringify(state).length+JSON.stringify(plan).length+2*plan.versions.reduce((n,v)=>n+v.maxTokens*48+input.length+6000,0);
+   const estimate=JSON.stringify(state).length+JSON.stringify(plan).length+[...plan.versions,...candidateVersions].reduce((n,v)=>n+v.maxTokens*48+input.length+6000,0);
    requireValue(estimate<=700000,'This workflow check may exceed workspace storage. Use shorter outputs or export to the local app.',413);
    const check={id:id(),experimentId:e.id,promptId:e.promptId,workflowId:w.id,winnerVersionId:e.winnerVersionId,baselineVersionId:active.id,input,plan,signature:JSON.stringify(plan),createdAt:now(),status:'running',branches:{baseline:{steps:[],status:'running'},candidate:{steps:[],status:'running'}},flags:[]};state.workflowChecks.push(check);
    await Promise.allSettled(Object.entries(check.branches).map(async([name,branch])=>{
