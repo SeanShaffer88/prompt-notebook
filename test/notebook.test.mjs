@@ -30,6 +30,19 @@ test('provider sends credentials only as headers, parses text and handles failur
   await assert.rejects(callModel('x',{}, {key:'',base:'https://example.test'}),/No provider key/);
   await assert.rejects(callModel('x',{}, {key:'secret',base:'https://example.test'},async()=>({ok:false,status:401,json:async()=>({error:{message:'secret'}})})),/HTTP 401/);
 });
+test('local Ollama needs no secret and receives disabled thinking for bounded runs',async()=>{
+  let request;await callModel('Hi',{maxTokens:64},{key:'',base:'http://127.0.0.1:11434',model:'local-model'},async(url,options)=>{request={url,...options};return {ok:true,json:async()=>({content:[{type:'text',text:'Hello'}]})};});
+  assert.equal(request.headers['x-api-key'],'ollama');assert.equal(JSON.parse(request.body).thinking.type,'disabled');
+});
+test('provider endpoint and model persist, but session keys never do',async(t)=>{
+  const dir=mkdtempSync(join(tmpdir(),'notebook-settings-'));const file=join(dir,'db.sqlite');
+  let server=createNotebookServer({dataFile:file,config:{key:'',base:'https://api.anthropic.com',model:'default'}});await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  let base='http://127.0.0.1:'+server.address().port;
+  const response=await fetch(base+'/api/settings',{method:'POST',headers:{'content-type':'application/json','x-notebook-request':'1'},body:JSON.stringify({apiKey:'session-only-key',model:'saved-model',base:'https://example.test'})});assert.equal(response.status,200);
+  await new Promise(r=>server.close(r));
+  server=createNotebookServer({dataFile:file,config:{key:'',base:'https://api.anthropic.com',model:'default'}});await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(async()=>{await new Promise(r=>server.close(r));rmSync(dir,{recursive:true});});base='http://127.0.0.1:'+server.address().port;
+  const s=await(await fetch(base+'/api/state')).json();assert.equal(s.provider.model,'saved-model');assert.equal(s.provider.configured,false);assert.ok(!JSON.stringify(s).includes('session-only-key'));
+});
 test('HTTP end-to-end: versions, correction, suggested candidate, tests, experiments, workflow staleness, export',async(t)=>{
   let calls=0;const server=createNotebookServer({dataFile:':memory:',config:{key:'test-secret',base:'https://example.test',model:'test-model'},modelCall:async(prompt)=>{calls++;return {output:prompt.startsWith('You improve')?'Use measured evidence only.\n\n{{source_notes}}':'Evidence is limited. Test further.',model:'test-model',usage:{input_tokens:10,output_tokens:7},latencyMs:2};}});
   await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>new Promise(r=>server.close(r)));const base='http://127.0.0.1:'+server.address().port;
