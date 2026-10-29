@@ -1,12 +1,13 @@
 import { id, now, requireValue, text, variables, fill, evaluate, cleanChecks, versionFor, createVersion as coreCreateVersion, workflowStatus } from './notebook-core.mjs';
 import { callModel, PROVIDERS, providerInfo, normalizeKeys, validateModelId } from './providers.mjs';
-import {enhancementService,enhancementState} from './notebook-enhancements.mjs';
+import {enhancementService,enhancementState,activationGate} from './notebook-enhancements.mjs';
 import {bundleService} from './notebook-bundles.mjs';
 export function notebookService(state, credentials='') {
   const store={read:()=>structuredClone(state),mutate:fn=>fn(state)};
   state.comparisons ||= [];
   state.savedResponses ||= [];
   state.promptImprovements ||= [];
+  state.activationHistory ||= [];
   const keys=normalizeKeys(typeof credentials==='string'?{anthropic:credentials}:credentials);
   let selected=providerInfo(state.settings?.provider || 'anthropic');
   // Existing hosted versions predate provider selection and were Anthropic versions.
@@ -34,7 +35,18 @@ export function notebookService(state, credentials='') {
     // Fixed destination: no custom endpoints, no server-funded keys, no access to local services.
     return callModel(prompt,options,{provider:resolved.id,key:keys[resolved.id],model:defaultModel(resolved.id)},(url,init)=>fetch(url,{...init,signal:AbortSignal.timeout(Math.max(1000,Math.min(45000,deadline-Date.now())))}));
   }
-  const getState=()=>({...structuredClone(state),workflowChecks:enhancementState(state,defaultModel),workflows:state.workflows.map(w=>({...w,...workflowStatus(state,w)})),provider:{id:selected.id,configured:Boolean(keys[selected.id]),model:defaultModel(selected.id),customEndpoint:false},providers:PROVIDERS,hosted:true});
+  const getState=()=>({...structuredClone(state),activationGates:Object.fromEntries(state.versions.map(v=>[v.id,activationGate(state,v.promptId,v.id,defaultModel)])),workflowChecks:enhancementState(state,defaultModel),workflows:state.workflows.map(w=>({...w,...workflowStatus(state,w)})),provider:{id:selected.id,configured:Boolean(keys[selected.id]),model:defaultModel(selected.id),customEndpoint:false},providers:PROVIDERS,hosted:true});
+  function activateVersion(promptId,versionId,body,experimentId=null){
+    const version=versionFor(state,promptId,versionId),prompt=state.prompts.find(p=>p.id===promptId);
+    if(body.expectedActiveVersionId!==undefined)requireValue(body.expectedActiveVersionId===prompt.activeVersionId,'The active version changed. Refresh and review before continuing.',409);
+    if(prompt.activeVersionId===version.id)return {activeVersionId:version.id,alreadyActive:true};
+    const gate=activationGate(state,promptId,version.id,defaultModel);
+    requireValue(body.override===undefined||typeof body.override==='boolean','Override must be true or false.');
+    requireValue(!gate.blocked||body.override===true,'Activation blocked by connected workflow checks: '+gate.checks.filter(c=>c.problem).map(c=>c.title+' ('+c.problem+')').join('; ')+'. Retest or provide a manual override reason.',422);
+    const reason=body.override===true?text(body.overrideReason,'Override reason',3000):null;
+    const activation={id:id(),promptId,experimentId,fromVersionId:prompt.activeVersionId,toVersionId:version.id,createdAt:now(),workflowGate:structuredClone(gate),override:reason?{reason}:null};
+    state.activationHistory.push(activation);prompt.activeVersionId=version.id;return activation;
+  }
   async function execute(promptId,versionId,inputs,meta={},override={}) {
     const version={...versionFor(store.read(),promptId,versionId),...override};preflight([version]); const rendered=fill(version.template,inputs);
     const run={id:id(),promptId,versionId:version.id,inputs,rendered,provider:version.provider,requestedModel:version.model || defaultModel(version.provider),maxTokens:version.maxTokens,status:'running',createdAt:now(),...meta};
@@ -126,7 +138,7 @@ export function notebookService(state, credentials='') {
     const match=path.match(/^\/api\/prompts\/([^/]+)\/(versions|activate|run|tests)$/);
     if(method==='POST' && match){const [,promptId,action]=match;
       if(action==='versions') return store.mutate(s=>createVersion(s,promptId,body));
-      if(action==='activate') return store.mutate(s=>{const v=versionFor(s,promptId,body.versionId);s.prompts.find(p=>p.id===promptId).activeVersionId=v.id;return v;});
+      if(action==='activate') return activateVersion(promptId,body.versionId,body);
       if(action==='run') return execute(promptId,body.versionId,body.inputs);
       if(action==='tests') return store.mutate(s=>{if(body.sourceRunId)requireValue(s.runs.some(r=>r.id===body.sourceRunId&&r.promptId===promptId),'Source run does not belong to this prompt.');versionFor(s,promptId);fill(versionFor(s,promptId).template,body.inputs);const t={id:id(),promptId,sourceRunId:body.sourceRunId || null,title:text(body.title,'Test name',160),inputs:body.inputs,checks:cleanChecks(body.checks),expected:typeof body.expected==='string'?body.expected.slice(0,60000):'',createdAt:now()};s.tests.push(t);return t;});
     }
@@ -155,12 +167,12 @@ export function notebookService(state, credentials='') {
         requireValue(e.versionIds.includes(e.winnerVersionId) && body.winnerVersionId===e.winnerVersionId,'Select and review the winning version first.',422);
         versionFor(state,prompt.id,e.winnerVersionId);
         if(prompt.activeVersionId===e.winnerVersionId)return {activeVersionId:prompt.activeVersionId,alreadyActive:true};
-        const activation={id:id(),fromVersionId:prompt.activeVersionId,toVersionId:e.winnerVersionId,createdAt:now()};
-        e.activations ||= [];e.activations.push(activation);prompt.activeVersionId=e.winnerVersionId;return activation;
+        const activation=activateVersion(prompt.id,e.winnerVersionId,body,e.id);
+        e.activations ||= [];e.activations.push(activation);return activation;
       }
       const activation=e.activations?.find(a=>a.id===body.activationId);
       requireValue(activation && !activation.rolledBackAt && prompt.activeVersionId===activation.toVersionId,'This activation can no longer be rolled back directly. Choose a saved version from History.',409);
-      versionFor(state,prompt.id,activation.fromVersionId);prompt.activeVersionId=activation.fromVersionId;activation.rolledBackAt=now();return {activeVersionId:prompt.activeVersionId};
+      versionFor(state,prompt.id,activation.fromVersionId);prompt.activeVersionId=activation.fromVersionId;activation.rolledBackAt=now();const audit=state.activationHistory.find(a=>a.id===activation.id);if(audit)audit.rolledBackAt=activation.rolledBackAt;return {activeVersionId:prompt.activeVersionId};
     }
     if(method==='POST' && path==='/api/experiments') {
       const s=store.read();const promptId=body.promptId;const versionIds=[...new Set(body.versionIds || [])];requireValue(versionIds.length===2,'Select two distinct versions.');versionIds.forEach(v=>versionFor(s,promptId,v));
