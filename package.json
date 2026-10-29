@@ -1,0 +1,9 @@
+{
+  "name": "prompt-notebook",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A personal AI prompt notebook with experiments and connected workflows",
+  "engines": { "node": ">=22.13" },
+  "scripts": { "start": "node --env-file-if-exists=.env server.mjs", "test": "node --test test/*.test.mjs", "check": "node --check server.mjs && node --check lib/notebook.mjs && node --check public/app.js" }
+}
