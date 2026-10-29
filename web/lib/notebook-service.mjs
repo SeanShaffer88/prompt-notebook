@@ -1,5 +1,6 @@
 import { id, now, requireValue, text, variables, fill, evaluate, cleanChecks, versionFor, createVersion as coreCreateVersion, workflowStatus } from './notebook-core.mjs';
 import { callModel, PROVIDERS, providerInfo, normalizeKeys, validateModelId } from './providers.mjs';
+import {enhancementService,enhancementState} from './notebook-enhancements.mjs';
 export function notebookService(state, credentials='') {
   const store={read:()=>structuredClone(state),mutate:fn=>fn(state)};
   state.comparisons ||= [];
@@ -32,7 +33,7 @@ export function notebookService(state, credentials='') {
     // Fixed destination: no custom endpoints, no server-funded keys, no access to local services.
     return callModel(prompt,options,{provider:resolved.id,key:keys[resolved.id],model:defaultModel(resolved.id)},(url,init)=>fetch(url,{...init,signal:AbortSignal.timeout(Math.max(1000,Math.min(45000,deadline-Date.now())))}));
   }
-  const getState=()=>({...structuredClone(state),workflows:state.workflows.map(w=>({...w,...workflowStatus(state,w)})),provider:{id:selected.id,configured:Boolean(keys[selected.id]),model:defaultModel(selected.id),customEndpoint:false},providers:PROVIDERS,hosted:true});
+  const getState=()=>({...structuredClone(state),workflowChecks:enhancementState(state,defaultModel),workflows:state.workflows.map(w=>({...w,...workflowStatus(state,w)})),provider:{id:selected.id,configured:Boolean(keys[selected.id]),model:defaultModel(selected.id),customEndpoint:false},providers:PROVIDERS,hosted:true});
   async function execute(promptId,versionId,inputs,meta={},override={}) {
     const version={...versionFor(store.read(),promptId,versionId),...override};preflight([version]); const rendered=fill(version.template,inputs);
     const run={id:id(),promptId,versionId:version.id,inputs,rendered,provider:version.provider,requestedModel:version.model || defaultModel(version.provider),maxTokens:version.maxTokens,status:'running',createdAt:now(),...meta};
@@ -41,7 +42,9 @@ export function notebookService(state, credentials='') {
     catch(e) { store.mutate(s=>Object.assign(s.runs.find(r=>r.id===run.id),{status:'failed',error:e.message,finishedAt:now()}));throw e; }
   }
 
+  const enhancements=enhancementService(state,{execute,preflight,defaultModel});
   async function route(method,path,body) {
+    const enhanced=await enhancements.route(method,path,body);if(enhanced!==undefined)return enhanced;
     if(method==='GET' && path==='/api/state') return getState();
     if(method==='GET' && path==='/api/export') return store.read();
     if(method==='POST' && path==='/api/comparisons'){

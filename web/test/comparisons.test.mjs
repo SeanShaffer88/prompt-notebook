@@ -9,6 +9,25 @@ async function reviewed(state){const service=notebookService(state),prompt=state
 
 async function tested(state){const {service,c,prompt}=await reviewed(state);const suggestion=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{});const candidate=await service.route('POST',`/api/improvements/${suggestion.id}/candidate`,{template:suggestion.template});const experiment=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[c.versionId,candidate.id],testIds:[candidate.comparisonSource.testId]});return {service,prompt,candidate,experiment:state.experiments.find(e=>e.id===experiment.id),original:c.versionId};}
 
+test('workflow checks isolate winner substitution, propagate branch outputs and flag regressions',async()=>{
+ const state=structuredClone(seed),{service,candidate,experiment,prompt,original}=await tested(state),w=state.workflows[0];
+ await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});
+ for(const v of state.versions){v.provider='openai';v.model='gpt-4.1-mini';}
+ candidate.template='CANDIDATE {{source_notes}}';
+ await service.route('POST',`/api/workflows/${w.id}/quality`,{contracts:w.promptIds.map(()=>({checks:{contains:'GOOD'},requiredFields:[],inputPerMillion:1,outputPerMillion:2})),maxLatencyMs:10000,maxCostUsd:1});
+ const previous=globalThis.fetch,requests=[];globalThis.fetch=async(url,init)=>{const request=JSON.parse(init.body);requests.push(request);return output(request.input.includes('CANDIDATE')||request.input.includes('BAD')?'BAD':'GOOD');};
+ try{const result=await notebookService(state,{openai:'test-key'}).route('POST',`/api/experiments/${experiment.id}/workflow-check`,{workflowId:w.id,baselineVersionId:original,input:'notes'});assert.equal(result.status,'regression');assert.ok(result.flags.some(f=>f.kind==='regression'&&f.index===1));assert.equal(result.branches.candidate.steps[0].versionId,candidate.id);assert.equal(result.branches.baseline.steps[0].versionId,original);assert.ok(requests.some(r=>r.input.includes('BAD')&&!r.input.includes('CANDIDATE')));assert.equal(prompt.activeVersionId,original);assert.ok(result.branches.candidate.costUsd>0);
+ const fresh=await notebookService(state).route('GET','/api/state');assert.equal(fresh.workflowChecks[0].stale,false);state.prompts[1].activeVersionId='missing';assert.equal((await notebookService(state).route('GET','/api/state')).workflowChecks[0].stale,true);
+ }finally{globalThis.fetch=previous;}
+});
+
+test('workflow key preflight happens before calls and sample checks never claim a quality pass',async()=>{
+ const state=structuredClone(seed),{service,candidate,experiment,original}=await tested(state),w=state.workflows[0];await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});
+ await assert.rejects(notebookService(state,{openai:'test-key'}).route('POST',`/api/experiments/${experiment.id}/workflow-check`,{workflowId:w.id,baselineVersionId:original,input:'notes'}),/key/);assert.equal(state.workflowChecks.length,0);
+ const result=await service.route('POST',`/api/experiments/${experiment.id}/workflow-check`,{workflowId:w.id,baselineVersionId:original,input:'notes'});assert.equal(result.status,'sample');assert.equal(result.branches.baseline.steps.length,2);assert.ok(result.flags.some(f=>f.kind==='sample'));
+ await assert.rejects(service.route('POST',`/api/experiments/${experiment.id}/workflow-check`,{workflowId:w.id,baselineVersionId:'stale',input:'notes'}),/changed/);
+});
+
 test('experiment winner activation and rollback persist without modifying saved versions or runs',async()=>{
  const state=structuredClone(seed),{service,prompt,candidate,experiment,original}=await tested(state),versions=structuredClone(state.versions),runs=structuredClone(state.runs);
  const route=(action,body)=>service.route('POST',`/api/experiments/${experiment.id}/${action}`,body);
