@@ -9,6 +9,30 @@ async function reviewed(state){const service=notebookService(state),prompt=state
 
 async function tested(state){const {service,c,prompt}=await reviewed(state);const suggestion=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{});const candidate=await service.route('POST',`/api/improvements/${suggestion.id}/candidate`,{template:suggestion.template});const experiment=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[c.versionId,candidate.id],testIds:[candidate.comparisonSource.testId]});return {service,prompt,candidate,experiment:state.experiments.find(e=>e.id===experiment.id),original:c.versionId};}
 
+test('workflow batch queues all missing checks, preserves progress, cancels and reuses fresh checks',async()=>{
+ const state=structuredClone(seed),{service,prompt,candidate,experiment,original}=await tested(state);await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});const a=state.workflows[0],b=await service.route('POST','/api/workflows',{title:'Research to editor',promptIds:[prompt.id,state.prompts[2].id]});
+ for(const w of [a,b])await service.route('POST',`/api/workflows/${w.id}/test-input`,{input:'Reusable notes'});
+ let batch=await service.route('POST',`/api/experiments/${experiment.id}/workflow-batch`,{baselineVersionId:original});assert.equal(batch.items.length,2);assert.equal(batch.items[0].input,'Reusable notes');
+ await assert.rejects(service.route('POST',`/api/experiments/${experiment.id}/workflow-batch`,{baselineVersionId:original}),/existing/);
+ await assert.rejects(service.route('POST',`/api/workflow-batches/${batch.id}/next`,{expectedWorkflowId:'wrong'}),/progress/);assert.equal(state.workflowChecks.length,0);
+ batch=await service.route('POST',`/api/workflow-batches/${batch.id}/next`,{expectedWorkflowId:a.id});assert.equal(batch.items[0].status,'complete');assert.equal(batch.items[1].status,'queued');assert.equal(prompt.activeVersionId,original);
+ const reopened=notebookService(structuredClone(state));assert.equal((await reopened.route('GET','/api/state')).workflowBatches[0].items[0].status,'complete');
+ await service.route('POST',`/api/workflow-batches/${batch.id}/cancel`,{});assert.equal(batch.status,'cancelled');assert.equal(batch.items[1].status,'cancelled');await assert.rejects(service.route('POST',`/api/workflow-batches/${batch.id}/next`,{expectedWorkflowId:b.id}),/no longer/);
+ const next=await service.route('POST',`/api/experiments/${experiment.id}/workflow-batch`,{baselineVersionId:original});assert.deepEqual(next.items.map(i=>i.workflowId),[b.id]);
+ state.prompts[0].activeVersionId=candidate.id;await service.route('POST',`/api/workflow-batches/${next.id}/next`,{expectedWorkflowId:b.id});assert.equal(next.status,'stale');assert.equal(state.workflowChecks.length,1);
+});
+
+test('batch preflights inputs and keys before calls; expiry reruns stale checks; review acceptance never clears regressions',async()=>{
+ const state=structuredClone(seed),{service,candidate,experiment,original}=await tested(state);await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});const w=state.workflows[0];
+ await assert.rejects(service.route('POST',`/api/experiments/${experiment.id}/workflow-batch`,{baselineVersionId:original}),/Input/);assert.equal(state.workflowBatches.length,0);
+ await service.route('POST',`/api/workflows/${w.id}/test-input`,{input:'notes'});await assert.rejects(notebookService(state,{openai:'test'}).route('POST',`/api/experiments/${experiment.id}/workflow-batch`,{baselineVersionId:original}),/key/);assert.equal(state.workflowBatches.length,0);
+ for(const v of state.versions){v.provider='openai';v.model='gpt-4.1-mini';}await service.route('POST',`/api/workflows/${w.id}/check-age`,{maxAgeHours:1});
+ const previous=globalThis.fetch;globalThis.fetch=async()=>output('GOOD');try{const live=notebookService(state,{openai:'test'});const batch=await live.route('POST',`/api/experiments/${experiment.id}/workflow-batch`,{baselineVersionId:original});await live.route('POST',`/api/workflow-batches/${batch.id}/next`,{expectedWorkflowId:w.id});const check=state.workflowChecks[0];assert.equal((await live.route('GET','/api/state')).activationGates[candidate.id].blocked,false);
+ check.flags.push({kind:'review',message:'Output changed'});assert.equal((await live.route('GET','/api/state')).activationGates[candidate.id].checks[0].problem,'human-review');await live.route('POST',`/api/workflow-checks/${check.id}/review`,{decision:'accept',notes:'Changed wording preserves the contract.'});assert.equal((await live.route('GET','/api/state')).activationGates[candidate.id].blocked,false);
+ check.flags.push({kind:'regression',message:'Required field lost'});assert.equal((await live.route('GET','/api/state')).activationGates[candidate.id].checks[0].problem,'regression');check.flags=[];check.finishedAt=new Date(Date.now()-7200000).toISOString();const stale=await live.route('GET','/api/state');assert.equal(stale.workflowChecks[0].expired,true);assert.equal(stale.activationGates[candidate.id].checks[0].problem,'stale');const retry=await live.route('POST',`/api/experiments/${experiment.id}/workflow-batch`,{baselineVersionId:original});assert.equal(retry.items.length,1);
+ }finally{globalThis.fetch=previous;}
+});
+
 test('activation gate rejects missing and sample checks on all activation routes; override saves immutable blockers and reason',async()=>{
  const state=structuredClone(seed),{service,prompt,candidate,experiment,original}=await tested(state),body={winnerVersionId:candidate.id,expectedActiveVersionId:original};await service.route('POST',`/api/experiments/${experiment.id}/winner`,{versionId:candidate.id});
  await assert.rejects(service.route('POST',`/api/experiments/${experiment.id}/activate`,body),/missing/);
