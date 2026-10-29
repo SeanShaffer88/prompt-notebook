@@ -2,6 +2,7 @@ import { id, now, requireValue, text, variables, fill, evaluate, cleanChecks, ve
 import { callModel, PROVIDERS, providerInfo, normalizeKeys, validateModelId } from './providers.mjs';
 import {enhancementService,enhancementState,activationGate} from './notebook-enhancements.mjs';
 import {bundleService} from './notebook-bundles.mjs';
+import {automationService} from './notebook-automation.mjs';
 export function notebookService(state, credentials='') {
   const store={read:()=>structuredClone(state),mutate:fn=>fn(state)};
   state.comparisons ||= [];
@@ -56,8 +57,10 @@ export function notebookService(state, credentials='') {
   }
 
   const enhancements=enhancementService(state,{execute,preflight,defaultModel});
+  const automation=automationService(state,{enhancements,preflight,defaultModel});
   const bundles=bundleService(state);
   async function route(method,path,body) {
+    const automatic=await automation.route(method,path,body);if(automatic!==undefined)return automatic;
     const bundle=await bundles(method,path,body);if(bundle!==undefined)return bundle;
     const enhanced=await enhancements.route(method,path,body);if(enhanced!==undefined)return enhanced;
     if(method==='GET' && path==='/api/state') return getState();
@@ -198,6 +201,6 @@ export function notebookService(state, credentials='') {
     throw Object.assign(new Error('Route not found.'),{status:404});
   }
 
-  return {route};
+  return {route:async(method,path,body)=>{const before=method==='POST'?automation.begin():null;const result=await route(method,path,body);if(before&&!path.startsWith('/api/auto/'))automation.observe(before,path);return result;}};
 }
 
