@@ -4,6 +4,10 @@ import {enhancementService,enhancementState,activationGate} from './notebook-enh
 import {bundleService} from './notebook-bundles.mjs';
 import {automationService} from './notebook-automation.mjs';
 import {repairService,approvedRepair} from './notebook-repairs.mjs';
+import {evaluationService,spendService} from './notebook-evaluations.mjs';
+import {insightsService,failureClusters} from './notebook-insights.mjs';
+import {routingService} from './notebook-routing.mjs';
+import {releaseService} from './notebook-releases.mjs';
 export function notebookService(state, credentials='') {
   const store={read:()=>structuredClone(state),mutate:fn=>fn(state)};
   state.comparisons ||= [];
@@ -24,6 +28,7 @@ export function notebookService(state, credentials='') {
   }
   function preflight(versions){if(!Object.keys(keys).length)return;for(const version of versions){const provider=resolveProvider(version);requireValue(keys[provider.id],`Connect a ${provider.name} key in Settings before running this version.`,422);}}
   const deadline=Date.now()+85000;
+  const spend=spendService(state,defaultModel);
   async function modelCall(prompt,options){
     requireValue(Date.now()<deadline,'This operation reached its time limit. Try fewer examples or steps.',422);
     const resolved=resolveProvider(options);
@@ -35,9 +40,11 @@ export function notebookService(state, credentials='') {
       return {output,model:'Sample mode — simulated',simulated:true,usage:{input_tokens:0,output_tokens:0},latencyMs:0};
     }
     // Fixed destination: no custom endpoints, no server-funded keys, no access to local services.
-    return callModel(prompt,options,{provider:resolved.id,key:keys[resolved.id],model:defaultModel(resolved.id)},(url,init)=>fetch(url,{...init,signal:AbortSignal.timeout(Math.max(1000,Math.min(45000,deadline-Date.now())))}));
+    preflight([options]);
+    const reservation=spend.reserve(prompt,{...options,provider:resolved.id},false);
+    try{const result=await callModel(prompt,options,{provider:resolved.id,key:keys[resolved.id],model:defaultModel(resolved.id)},(url,init)=>fetch(url,{...init,signal:AbortSignal.timeout(Math.max(1000,Math.min(45000,deadline-Date.now())))}));spend.finish(reservation,result);return result;}catch(error){spend.finish(reservation,null);throw error;}
   }
-  const getState=()=>({...structuredClone(state),repairViews:Object.fromEntries(state.repairCases.map(r=>[r.id,repairs.view(r)])),activationGates:Object.fromEntries(state.versions.map(v=>[v.id,activationGate(state,v.promptId,v.id,defaultModel)])),workflowChecks:enhancementState(state,defaultModel),workflows:state.workflows.map(w=>({...w,...workflowStatus(state,w)})),provider:{id:selected.id,configured:Boolean(keys[selected.id]),model:defaultModel(selected.id),customEndpoint:false},providers:PROVIDERS,hosted:true});
+  const getState=()=>({...structuredClone(state),evaluationRuns:state.evaluationRuns.map(evaluations.summary),failureClusters:failureClusters(state),repairViews:Object.fromEntries(state.repairCases.map(r=>[r.id,repairs.view(r)])),activationGates:Object.fromEntries(state.versions.map(v=>[v.id,activationGate(state,v.promptId,v.id,defaultModel)])),workflowChecks:enhancementState(state,defaultModel),workflows:state.workflows.map(w=>({...w,...workflowStatus(state,w)})),provider:{id:selected.id,configured:Boolean(keys[selected.id]),model:defaultModel(selected.id),customEndpoint:false},providers:PROVIDERS,hosted:true});
   function activateVersion(promptId,versionId,body,experimentId=null){
     const version=versionFor(state,promptId,versionId),prompt=state.prompts.find(p=>p.id===promptId);
     if(body.expectedActiveVersionId!==undefined)requireValue(body.expectedActiveVersionId===prompt.activeVersionId,'The active version changed. Refresh and review before continuing.',409);
@@ -62,7 +69,23 @@ export function notebookService(state, credentials='') {
   const automation=automationService(state,{enhancements,preflight,defaultModel});
   const repairs=repairService(state,{modelCall,createVersion,preflight,defaultModel,enhancements,activateVersion});
   const bundles=bundleService(state);
+  const evaluations=evaluationService(state,{execute,preflight,defaultModel});
+  const insights=insightsService(state);
+  const routing=routingService(state,{execute,preflight});
+  const releases=releaseService(state,{restore:async(snapshot,body)=>{
+    const reason=text(body.reason,'Restore reason',3000);
+    requireValue(JSON.stringify(body.expectedActiveVersions)===JSON.stringify(state.prompts.map(p=>({promptId:p.id,versionId:p.activeVersionId})))&&body.expectedConfiguration===JSON.stringify({workflows:state.workflows,suites:state.evaluationSuites}),'Workspace changed after preview. Preview the release again.',409);
+    const staged=structuredClone(state);for(const w of snapshot.workflows){const index=staged.workflows.findIndex(item=>item.id===w.id);requireValue(index>=0,'Snapshot workflow is missing.');staged.workflows[index]=structuredClone(w);}for(const s of snapshot.suites){const index=staged.evaluationSuites.findIndex(item=>item.id===s.id);requireValue(index>=0,'Snapshot suite is missing.');staged.evaluationSuites[index]=structuredClone(s);}
+    const service=notebookService(staged);for(const item of snapshot.promptVersions){const p=staged.prompts.find(p=>p.id===item.promptId);requireValue(p,'Snapshot prompt is missing.');await service.route('POST',`/api/prompts/${p.id}/activate`,{versionId:item.versionId,expectedActiveVersionId:p.activeVersionId,override:body.override===true,overrideReason:body.override===true?reason:undefined});}
+    const audit={id:id(),snapshotId:snapshot.id,reason,override:body.override===true,createdAt:now(),previousPromptVersions:state.prompts.map(p=>({promptId:p.id,versionId:p.activeVersionId})),previousWorkflows:structuredClone(state.workflows),previousSuites:structuredClone(state.evaluationSuites)};staged.releaseRestores.push(audit);requireValue(JSON.stringify(staged).length<=700000,'Restore audit exceeds workspace storage.',413);Object.assign(state,staged);return audit;
+  }});
   async function route(method,path,body) {
+    const released=await releases(method,path,body);if(released!==undefined)return released;
+    const routed=await routing(method,path,body);if(routed!==undefined)return routed;
+    const insight=await insights(method,path,body);if(insight!==undefined)return insight;
+    if(method==='POST'&&path==='/api/spend/settings')return spend.configure(body);
+    if(method==='POST'&&path==='/api/spend/new-session'){requireValue(body.reason?.trim(),'Give a reason for starting a new spend session.');state.spendPolicy.session={id:id(),createdAt:now(),reason:text(body.reason,'Session reason',1000),calls:0,costUsd:0,unpricedCalls:0};return state.spendPolicy;}
+    const evaluated=await evaluations.route(method,path,body);if(evaluated!==undefined)return evaluated;
     if(method==='POST'&&path==='/api/repairs/sync'){repairs.syncAlerts();return {ok:true};}
     const repaired=await repairs.route(method,path,body);if(repaired!==undefined)return repaired;
     const automatic=await automation.route(method,path,body);if(automatic!==undefined)return automatic;

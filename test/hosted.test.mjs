@@ -4,3 +4,4 @@ import '../web/test/providers.test.mjs';
 import '../web/test/catalog.test.mjs';
 import '../web/test/comparisons.test.mjs';
 import '../web/test/repairs.test.mjs';
+import '../web/test/quality-lab.test.mjs';
