@@ -24,3 +24,6 @@ Service tests cover the sample correction/experiment/workflow loop, all three AP
 
 ### Review model comparisons
 Rate each completed response from 1–5, pick one winner, and save that winner into the notebook. Ratings and winner choices persist. Saved best responses retain the exact output, prompt/input snapshot, model, sample label, and rating at save time. Changing a winner leaves earlier saved responses intact; repeated saves of the same response are deduplicated. Prompt exports include reviews and saved responses. Failed responses cannot be rated or selected.
+
+### Improve prompts from reviewed comparisons
+After rating a response and choosing a winner, use Suggest improved prompt with optional feedback. The suggestion records the winner, all ratings and outputs as a snapshot, uses the original version's model, and preserves template variables. Review and edit it, then Save candidate & set up test. The original version and source example are preselected in Experiments; both versions run on the candidate's pinned provider/model/token limit. The source example is labeled as used for improvement. Add fresh examples to assess generalization. Reference answers support human review and are not automatic quality scores. Candidates do not become active automatically. Sample suggestions and runs remain explicitly simulated.

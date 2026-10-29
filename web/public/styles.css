@@ -8,3 +8,5 @@
 .comparison-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin:18px 0}.comparison-grid.count-3{grid-template-columns:repeat(3,minmax(0,1fr))}.comparison-grid.count-4{grid-template-columns:repeat(4,minmax(0,1fr))}.comparison-response{min-width:0;border:1px solid var(--line);padding:14px;border-radius:8px}.comparison-response h3{overflow-wrap:anywhere}.comparison-response .run-meta{display:block}.comparison-response .run-meta span{display:block}.comparison-targets>div{padding:8px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}@media(max-width:1100px){.comparison-grid.count-3,.comparison-grid.count-4{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:650px){.comparison-grid,.comparison-grid.count-3,.comparison-grid.count-4{grid-template-columns:1fr}}
 
 .response-review{border-top:1px solid #d8ddd5;margin-top:20px;padding-top:14px}.response-review button{margin-top:12px;width:100%}.saved-response{border-left:4px solid #39755a}
+
+.improvement-panel{margin-top:24px;padding-top:20px;border-top:1px solid #42494c}.improvement-panel details{margin-top:18px}
