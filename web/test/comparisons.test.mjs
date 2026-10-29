@@ -7,6 +7,29 @@ const output=text=>({ok:true,json:async()=>({status:'completed',output:[{type:'m
 
 async function reviewed(state){const service=notebookService(state),prompt=state.prompts[0];const c=await service.route('POST','/api/comparisons',{promptId:prompt.id,inputs:{source_notes:'review notes'},targets});await service.route('POST',`/api/comparisons/${c.id}/rate`,{runId:c.results[0].runId,rating:5});await service.route('POST',`/api/comparisons/${c.id}/winner`,{runId:c.results[0].runId});return {service,c,prompt};}
 
+async function tested(state){const {service,c,prompt}=await reviewed(state);const suggestion=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{});const candidate=await service.route('POST',`/api/improvements/${suggestion.id}/candidate`,{template:suggestion.template});const experiment=await service.route('POST','/api/experiments',{promptId:prompt.id,versionIds:[c.versionId,candidate.id],testIds:[candidate.comparisonSource.testId]});return {service,prompt,candidate,experiment:state.experiments.find(e=>e.id===experiment.id),original:c.versionId};}
+
+test('experiment winner activation and rollback persist without modifying saved versions or runs',async()=>{
+ const state=structuredClone(seed),{service,prompt,candidate,experiment,original}=await tested(state),versions=structuredClone(state.versions),runs=structuredClone(state.runs);
+ const route=(action,body)=>service.route('POST',`/api/experiments/${experiment.id}/${action}`,body);
+ await route('winner',{versionId:candidate.id});assert.equal(prompt.activeVersionId,original);
+ const activation=await route('activate',{winnerVersionId:candidate.id,expectedActiveVersionId:original});assert.equal(prompt.activeVersionId,candidate.id);assert.equal(activation.fromVersionId,original);
+ assert.equal((await route('activate',{winnerVersionId:candidate.id,expectedActiveVersionId:candidate.id})).alreadyActive,true);assert.equal(experiment.activations.length,1);
+ await route('winner',{versionId:original});assert.equal(prompt.activeVersionId,candidate.id);
+ await route('rollback',{activationId:activation.id,expectedActiveVersionId:candidate.id});assert.equal(prompt.activeVersionId,original);assert.ok(activation.rolledBackAt);
+ const reopened=await notebookService(structuredClone(state)).route('GET','/api/state');assert.equal(reopened.experiments[0].winnerVersionId,original);assert.ok(reopened.experiments[0].activations[0].rolledBackAt);assert.deepEqual(state.versions,versions);assert.deepEqual(state.runs,runs);
+ await route('winner',{versionId:null});assert.equal(experiment.winnerVersionId,null);
+});
+
+test('experiment decisions reject foreign versions, incomplete runs and stale activation or rollback',async()=>{
+ const state=structuredClone(seed),{service,prompt,candidate,experiment,original}=await tested(state),route=(action,body)=>service.route('POST',`/api/experiments/${experiment.id}/${action}`,body);
+ await assert.rejects(route('winner',{versionId:state.prompts[1].activeVersionId}));await assert.rejects(route('activate',{winnerVersionId:candidate.id,expectedActiveVersionId:original}));
+ await route('winner',{versionId:candidate.id});await assert.rejects(route('activate',{winnerVersionId:original,expectedActiveVersionId:original}));await assert.rejects(route('activate',{winnerVersionId:candidate.id,expectedActiveVersionId:'stale'}),/changed/);
+ const activation=await route('activate',{winnerVersionId:candidate.id,expectedActiveVersionId:original});prompt.activeVersionId=original;
+ await assert.rejects(route('rollback',{activationId:activation.id,expectedActiveVersionId:candidate.id}),/changed/);await assert.rejects(route('rollback',{activationId:activation.id,expectedActiveVersionId:original}),/no longer/);
+ experiment.status='failed';await assert.rejects(route('winner',{versionId:original}),/Complete/);experiment.status='complete';state.runs.find(r=>r.id===experiment.results[0].runId).status='failed';await assert.rejects(route('winner',{versionId:original}),/Complete/);assert.equal(prompt.activeVersionId,original);
+});
+
 test('review improvement preserves evidence, creates a candidate and tests the exact original',async()=>{
  const state=structuredClone(seed),{service,c,prompt}=await reviewed(state),base=state.versions.find(v=>v.id===c.versionId);
  const improvement=await service.route('POST',`/api/comparisons/${c.id}/suggest`,{feedback:'Prefer explicit uncertainty'});
@@ -91,3 +114,4 @@ test('large comparisons are rejected before spending provider calls',async()=>{
  const previous=globalThis.fetch;let calls=0;globalThis.fetch=()=>{calls++;throw Error('Should not call');};
  try{await assert.rejects(notebookService(state,{openai:'test-key'}).route('POST','/api/comparisons',{promptId:state.prompts[0].id,inputs:{source_notes:'x'.repeat(100000)},targets}),/workspace storage/);assert.equal(calls,0);assert.equal(state.comparisons.length,0);}finally{globalThis.fetch=previous;}
 });
+
