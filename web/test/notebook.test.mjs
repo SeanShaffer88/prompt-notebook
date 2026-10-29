@@ -30,5 +30,5 @@ test('each visitor state is independent and settings cannot select a custom prox
  const a=structuredClone(seed),b=structuredClone(seed);const api=notebookService(a).route;
  await api('POST','/api/prompts',{title:'Only visitor A'});assert.equal(a.prompts.length,b.prompts.length+1);
  await api('POST','/api/settings',{model:'test-model',base:'http://localhost:11434',apiKey:'never-store-this'});
- assert.deepEqual(a.settings,{model:'test-model'});assert.ok(!JSON.stringify(a).includes('never-store-this'));assert.ok(!a.settings.base);
+ assert.deepEqual(a.settings,{provider:'anthropic',model:'test-model',models:{anthropic:'test-model'}});assert.ok(!JSON.stringify(a).includes('never-store-this'));assert.ok(!a.settings.base);
 });

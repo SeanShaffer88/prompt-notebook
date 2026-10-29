@@ -46,9 +46,12 @@ async function handle(request:Request){
     if(!acquired.meta.changes)throw fail('Another operation is running in this workspace. Wait for it to finish.',409);
     const locked:any=await db.prepare('SELECT * FROM notebook_workspaces WHERE id=?').bind(workspaceId).first();state=JSON.parse(locked.body);
     const key=request.headers.get('x-provider-key')||'';
-    if(key.length>1000)throw fail('Invalid provider key.');
+    const packedKeys=request.headers.get('x-provider-keys');
+    if(key.length>1000 || (packedKeys && packedKeys.length>4000))throw fail('Invalid provider keys.');
+    let keys:any={anthropic:key};
+    if(packedKeys){try{keys=JSON.parse(packedKeys);}catch{throw fail('Invalid provider keys.');}}
     let result;
-    try{result=await notebookService(state,key).route('POST',url.pathname,body);}
+    try{result=await notebookService(state,keys).route('POST',url.pathname,body);}
     catch(error){await save(state,locked);throw error;}
     await save(state,locked);return json(result,200,cookie);
     async function save(value:any,previous:any){

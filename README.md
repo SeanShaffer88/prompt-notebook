@@ -6,7 +6,7 @@ A working personal AI notebook: reusable prompts, immutable versions, real Anthr
 
 **[Open the public notebook](https://prompt-notebook-lab.copperbun512.chatgpt.site)** — no installation or login required.
 
-Sample mode is clearly labeled and uses simulated outputs, without any model calls. For real execution, connect your own Anthropic API key in Settings. The key stays in tab memory, is sent over HTTPS only for requested model operations, and is not saved or exported. Reloading clears it.
+Sample mode is clearly labeled and uses simulated outputs, without any model calls. For real execution, connect your own **Anthropic, OpenAI, or Gemini** API key in Settings. Keys stay separate in tab memory, are sent over HTTPS only for requested model operations, and are not saved or exported. Reloading clears them. Each saved version pins its provider; to change it, select a provider under Instructions and save a new version. Connect all required keys to run experiments or workflows that span providers.
 
 Each browser has a separate server-saved workspace, identified by a private cookie. Keep cookies to return and export important work; there is no cross-device recovery or backup import yet. The public demo has bounded usage and storage. Hosted source and its security/usage notes are in [`web/PUBLIC-NOTEBOOK.md`](web/PUBLIC-NOTEBOOK.md). The local application below remains independent and can still use Ollama.
 
