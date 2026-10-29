@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import seed from '../../../lib/seed.json';
 import { notebookService } from '../../../lib/notebook-service.mjs';
+import { modelCatalog } from '../../../lib/model-catalog.mjs';
 const cookieName='pn_workspace';
 const json=(data:unknown,status=200,cookie?:string)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...(cookie?{'Set-Cookie':cookie}:{})}});
 const fail=(message:string,status=400)=>Object.assign(new Error(message),{status});
@@ -14,6 +15,9 @@ async function handle(request:Request){
     if(origin && origin!==url.origin)throw fail('Cross-origin access denied.',403);
     if(request.headers.get('sec-fetch-site')==='cross-site')throw fail('Cross-site API requests are not allowed.',403);
     if(!['GET','POST'].includes(request.method))throw fail('Method not allowed.',405);
+    if(request.method==='GET' && url.pathname==='/api/models'){
+      const response=json(await modelCatalog());response.headers.set('Cache-Control','public, max-age=600');return response;
+    }
     const token=request.headers.get('cookie')?.split(';').map(s=>s.trim()).find(s=>s.startsWith(cookieName+'='))?.slice(cookieName.length+1);
     const freshToken=token&&/^[a-f0-9]{64}$/.test(token)?token:Array.from(crypto.getRandomValues(new Uint8Array(32)),x=>x.toString(16).padStart(2,'0')).join('');
     workspaceId=await sha(freshToken);
@@ -47,7 +51,7 @@ async function handle(request:Request){
     const locked:any=await db.prepare('SELECT * FROM notebook_workspaces WHERE id=?').bind(workspaceId).first();state=JSON.parse(locked.body);
     const key=request.headers.get('x-provider-key')||'';
     const packedKeys=request.headers.get('x-provider-keys');
-    if(key.length>1000 || (packedKeys && packedKeys.length>4000))throw fail('Invalid provider keys.');
+    if(key.length>1000 || (packedKeys && packedKeys.length>16000))throw fail('Invalid provider keys.');
     let keys:any={anthropic:key};
     if(packedKeys){try{keys=JSON.parse(packedKeys);}catch{throw fail('Invalid provider keys.');}}
     let result;

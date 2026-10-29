@@ -13,7 +13,7 @@ test('Gemini uses its fixed endpoint and key header, excludes thought text and n
  assert.equal(req.url,'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent');assert.equal(req.headers['x-goog-api-key'],'test-gemini');assert.ok(!req.url.includes('test-gemini'));assert.equal(JSON.parse(req.body).generationConfig.maxOutputTokens,256);assert.equal(run.output,'Visible response');assert.equal(run.usage.output_tokens,6);assert.equal(run.stopReason,'max_tokens');
 });
 test('invalid providers/models, redirects, refusals and provider errors never leak secrets or become samples',async()=>{
- await assert.rejects(callModel('x',{}, {provider:'evil',key:'secret'}),/Choose Anthropic/);
+ await assert.rejects(callModel('x',{}, {provider:'evil',key:'secret'}),/supported provider/);
  await assert.rejects(callModel('x',{model:'https://evil.test'}, {provider:'gemini',key:'secret'}),/model ID/);
  const fake=async()=>({ok:false,status:429,json:async()=>({error:{message:'secret'}})});
  await assert.rejects(callModel('x',{}, {provider:'openai',key:'secret'},fake),e=>e.message.includes('HTTP 429')&&!e.message.includes('secret'));
